@@ -1,4 +1,3 @@
-import io
 import uuid
 
 from django.conf import settings
@@ -40,13 +39,18 @@ class RegisterEmailView(APIView):
         serializer = EmailSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            send_verification_code(serializer.validated_data['email'])
+            code = send_verification_code(serializer.validated_data['email'])
         except Exception as exc:
             return Response(
                 {'detail': f'Не удалось отправить email: {exc}'},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
-        return Response({'detail': 'Код отправлен на email'})
+        payload = {'detail': 'Код отправлен на email'}
+        # В режиме console/DEBUG показываем код, чтобы можно было пройти регистрацию без SMTP
+        if settings.DEBUG and 'console' in settings.EMAIL_BACKEND:
+            payload['detail'] = 'SMTP не настроен — код выведен в консоль бэкенда'
+            payload['debug_code'] = code
+        return Response(payload)
 
 
 class RegisterVerifyCodeView(APIView):

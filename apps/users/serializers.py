@@ -92,6 +92,7 @@ def send_verification_code(email):
         recipient_list=[email],
         fail_silently=False,
     )
+    return code
 
 
 def verify_code_and_create_session(email, code):
