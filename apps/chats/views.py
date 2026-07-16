@@ -19,6 +19,9 @@ from apps.chats.services import (
     get_visible_messages,
     upload_chat_files,
 )
+from django.http import HttpResponse
+from mimetypes import guess_type
+
 from apps.users.serializers import UserSerializer
 from apps.users.services.minio_service import download_object_bytes
 
@@ -41,7 +44,7 @@ class StartChatView(APIView):
         partner = get_chat_partner(chat, request.user)
         return Response({
             'id': chat.id,
-            'partner': UserSerializer(partner).data,
+            'partner': UserSerializer(partner, context={'request': request}).data,
         }, status=status.HTTP_200_OK)
 
 
@@ -56,10 +59,11 @@ class ChatListView(APIView):
         for chat in chats:
             partner = get_chat_partner(chat, request.user)
             last_message = get_last_visible_message(chat, request.user)
+            ctx = {'request': request}
             result.append({
                 'id': chat.id,
-                'partner': UserSerializer(partner).data if partner else None,
-                'last_message': MessageSerializer(last_message).data if last_message else None,
+                'partner': UserSerializer(partner, context=ctx).data if partner else None,
+                'last_message': MessageSerializer(last_message, context=ctx).data if last_message else None,
                 'updated_at': chat.updated_at,
             })
         return Response(result)
@@ -78,7 +82,9 @@ class ChatMessagesView(APIView):
         page_size = int(request.query_params.get('limit', 50))
         offset = int(request.query_params.get('offset', 0))
         sliced = messages[offset:offset + page_size]
-        return Response(MessageSerializer(sliced, many=True).data)
+        return Response(
+            MessageSerializer(sliced, many=True, context={'request': request}).data
+        )
 
 
 class ChatMessageUploadView(APIView):
@@ -215,6 +221,41 @@ class UserSearchView(APIView):
             .exclude(id=request.user.id)
             .distinct()[:20]
         )
-        payload = json.loads(JSONRenderer().render(UserSerializer(users, many=True).data))
+        payload = json.loads(
+            JSONRenderer().render(
+                UserSerializer(users, many=True, context={'request': request}).data
+            )
+        )
         cache.set(cache_key, payload, settings.USER_SEARCH_CACHE_TTL)
         return Response(payload)
+
+
+class MediaProxyView(APIView):
+    """Отдаёт объект MinIO через API (для телефонов, если localhost:MinIO недоступен)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        path = (request.query_params.get('path') or '').strip().lstrip('/')
+        if not path or '/' not in path:
+            return Response({'detail': 'path обязателен'}, status=400)
+
+        bucket = path.split('/', 1)[0]
+        allowed = {
+            settings.MINIO_BUCKET_AVATARS,
+            settings.MINIO_BUCKET_CHAT_FILES,
+        }
+        if bucket not in allowed:
+            return Response({'detail': 'Недопустимый bucket'}, status=403)
+
+        try:
+            data = download_object_bytes(path, max_bytes=20 * 1024 * 1024)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=400)
+        if data is None:
+            return Response({'detail': 'Файл не найден'}, status=404)
+
+        content_type = guess_type(path)[0] or 'application/octet-stream'
+        response = HttpResponse(data, content_type=content_type)
+        response['Cache-Control'] = 'private, max-age=3600'
+        return response

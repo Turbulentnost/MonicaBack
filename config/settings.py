@@ -165,6 +165,9 @@ MINIO_SECRET_KEY = os.getenv('MINIO_SECRET_KEY', 'minioadmin123')
 MINIO_USE_SSL = os.getenv('MINIO_USE_SSL', 'False').lower() in ('true', '1', 'yes')
 MINIO_BUCKET_AVATARS = os.getenv('MINIO_BUCKET_AVATARS', 'user-avatars')
 MINIO_BUCKET_CHAT_FILES = os.getenv('MINIO_BUCKET_CHAT_FILES', 'chat-files')
+# Хост:порт, доступный с телефонов в LAN (иначе в URL останется localhost).
+# Пример: 192.168.1.157:9010
+MINIO_PUBLIC_ENDPOINT = os.getenv('MINIO_PUBLIC_ENDPOINT', '')
 
 REGISTRATION_CODE_TTL = 900
 REGISTRATION_SESSION_TTL = 300

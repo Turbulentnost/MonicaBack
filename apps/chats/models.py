@@ -49,6 +49,7 @@ class Message(models.Model):
         'self', null=True, blank=True, on_delete=models.SET_NULL, related_name='forwards'
     )
     sent_at = models.DateTimeField(auto_now_add=True)
+    read_at = models.DateTimeField(null=True, blank=True)
     deleted_at = models.DateTimeField(null=True, blank=True)
     deleted_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

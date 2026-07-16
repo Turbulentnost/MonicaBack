@@ -4,7 +4,7 @@ from django.contrib.auth.models import AnonymousUser
 from django.utils import timezone
 
 from apps.chats.models import Chat, Message, MessageType
-from apps.chats.services import user_in_chat
+from apps.chats.services import mark_messages_read, user_in_chat
 
 VALID_MESSAGE_TYPES = {choice.value for choice in MessageType}
 
@@ -25,6 +25,8 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         self.room_group_name = f'chat_{self.chat_id}'
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
+        # Открыли чат — отмечаем входящие как прочитанные
+        await self._mark_read()
 
     async def disconnect(self, close_code):
         if hasattr(self, 'room_group_name'):
@@ -35,6 +37,8 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         action = content.get('action')
         if action == 'message.send':
             await self._handle_send_message(content)
+        elif action == 'messages.read':
+            await self._mark_read(content.get('message_ids'))
         elif action == 'typing.start':
             await self._broadcast_typing(True)
         elif action == 'typing.stop':
@@ -62,6 +66,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         if not text_content:
             return
 
+        client_id = (content.get('client_id') or '').strip() or None
         file_name = (content.get('file_name') or '').strip()
         mime_type = (content.get('mime_type') or '').strip()
         file_size = content.get('file_size')
@@ -79,10 +84,28 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         await self._broadcast_typing(False)
 
         payload = await self._serialize_message(message)
+        if client_id:
+            payload['client_id'] = client_id
         await self.channel_layer.group_send(
             self.room_group_name,
             {'type': 'chat.message', 'message': payload},
         )
+        # Превью в списке чатов (presence / user_* группы), даже если чат не открыт
+        await self._broadcast_chat_preview(payload)
+
+    async def _mark_read(self, message_ids=None):
+        ids = await self._mark_messages_read(message_ids)
+        if ids:
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {
+                    'type': 'chat.messages_read',
+                    'message_ids': [str(mid) for mid in ids],
+                    'reader_id': str(self.user.id),
+                    'read_at': timezone.now().isoformat(),
+                },
+            )
+        return ids
 
     async def chat_message(self, event):
         await self.send_json({'action': 'message.new', 'message': event['message']})
@@ -91,6 +114,14 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         await self.send_json({
             'action': 'message.deleted',
             'message_id': event['message_id'],
+        })
+
+    async def chat_messages_read(self, event):
+        await self.send_json({
+            'action': 'messages.read',
+            'message_ids': event['message_ids'],
+            'reader_id': event['reader_id'],
+            'read_at': event['read_at'],
         })
 
     async def chat_typing(self, event):
@@ -142,7 +173,35 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         return message
 
     @database_sync_to_async
+    def _mark_messages_read(self, message_ids=None):
+        try:
+            chat = Chat.objects.get(id=self.chat_id)
+        except Chat.DoesNotExist:
+            return []
+        try:
+            return mark_messages_read(chat, self.user, message_ids)
+        except PermissionError:
+            return []
+
+    @database_sync_to_async
     def _serialize_message(self, message):
         import json
         from apps.chats.serializers import MessageSerializer
         return json.loads(json.dumps(MessageSerializer(message).data, default=str))
+
+    @database_sync_to_async
+    def _participant_user_ids(self):
+        try:
+            chat = Chat.objects.get(id=self.chat_id)
+        except Chat.DoesNotExist:
+            return []
+        return [str(uid) for uid in chat.participants.values_list('user_id', flat=True)]
+
+    async def _broadcast_chat_preview(self, payload):
+        from apps.notifications.services import user_channel_group
+
+        for uid in await self._participant_user_ids():
+            await self.channel_layer.group_send(
+                user_channel_group(uid),
+                {'type': 'chat.preview', 'message': payload},
+            )

@@ -6,6 +6,7 @@ from apps.chats.views import (
     ChatMessageRunView,
     ChatMessagesView,
     ChatMessageUploadView,
+    MediaProxyView,
     StartChatView,
     UserSearchView,
 )
@@ -30,4 +31,5 @@ urlpatterns = [
     path('private/<uuid:session_id>/decline/', PrivateSessionDeclineView.as_view()),
     path('private/<uuid:session_id>/close/', PrivateSessionCloseView.as_view()),
     path('users/search/', UserSearchView.as_view()),
+    path('media/', MediaProxyView.as_view()),
 ]

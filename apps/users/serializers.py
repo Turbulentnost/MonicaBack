@@ -68,8 +68,21 @@ class UserSerializer(serializers.ModelSerializer):
     def get_photo_url(self, obj):
         if not obj.photo:
             return None
+        from urllib.parse import quote
+
         from apps.users.services.minio_service import get_presigned_url
-        return get_presigned_url(obj.photo)
+
+        # 1) Presigned MinIO (с MINIO_PUBLIC_ENDPOINT для LAN)
+        url = get_presigned_url(obj.photo)
+        if url:
+            return url
+
+        # 2) Fallback: прокси через API (телефон качает с Bearer)
+        request = self.context.get('request')
+        path = f'/api/media/?path={quote(obj.photo, safe="")}'
+        if request is not None:
+            return request.build_absolute_uri(path)
+        return path
 
     def get_is_online(self, obj):
         from apps.chats.presence import is_user_online

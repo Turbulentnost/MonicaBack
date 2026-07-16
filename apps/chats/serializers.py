@@ -14,6 +14,7 @@ class MessageSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'chat', 'sender', 'message_type', 'content', 'content_url',
             'file_name', 'mime_type', 'file_size', 'forwarded_from', 'sent_at',
+            'read_at',
         ]
         read_only_fields = fields
 

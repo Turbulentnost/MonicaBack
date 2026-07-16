@@ -52,6 +52,22 @@ def upload_file(bucket, object_name, file_data, content_type):
     return path
 
 
+def _rewrite_public_url(url):
+    """Подменить host MinIO на публичный (LAN IP), чтобы телефоны видели файлы."""
+    public = (getattr(settings, 'MINIO_PUBLIC_ENDPOINT', None) or '').strip()
+    if not url or not public:
+        return url
+    from urllib.parse import urlparse, urlunparse
+
+    parsed = urlparse(url)
+    public_parsed = urlparse(public if '://' in public else f'http://{public}')
+    scheme = public_parsed.scheme or parsed.scheme or 'http'
+    netloc = public_parsed.netloc or public_parsed.path
+    if not netloc:
+        return url
+    return urlunparse(parsed._replace(scheme=scheme, netloc=netloc))
+
+
 def get_presigned_url(object_path, expires_hours=24):
     if not object_path:
         return None
@@ -62,7 +78,7 @@ def get_presigned_url(object_path, expires_hours=24):
     cache_key = _presigned_cache_key(object_path)
     cached = cache.get(cache_key)
     if cached:
-        return cached
+        return _rewrite_public_url(cached)
 
     bucket, object_name = parts
     client = get_minio_client()
@@ -76,7 +92,7 @@ def get_presigned_url(object_path, expires_hours=24):
     # Чуть меньше срока MinIO, чтобы не отдавать уже просроченный URL
     ttl = getattr(settings, 'PHOTO_URL_CACHE_TTL', max(3600, (expires_hours - 1) * 3600))
     cache.set(cache_key, url, ttl)
-    return url
+    return _rewrite_public_url(url)
 
 
 def delete_object(object_path):

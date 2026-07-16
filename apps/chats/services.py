@@ -185,6 +185,46 @@ def broadcast_message_deleted(chat_id, message_id):
     )
 
 
+def broadcast_messages_read(chat_id, message_ids, reader_id):
+    if not message_ids:
+        return
+    channel_layer = get_channel_layer()
+    if not channel_layer:
+        return
+    async_to_sync(channel_layer.group_send)(
+        f'chat_{chat_id}',
+        {
+            'type': 'chat.messages_read',
+            'message_ids': [str(mid) for mid in message_ids],
+            'reader_id': str(reader_id),
+            'read_at': timezone.now().isoformat(),
+        },
+    )
+
+
+def mark_messages_read(chat, user, message_ids=None):
+    """Отмечает чужие непрочитанные сообщения как прочитанные. Возвращает id."""
+    if not user_in_chat(chat, user):
+        raise PermissionError('Нет доступа к чату')
+
+    qs = Message.objects.filter(
+        chat=chat,
+        deleted_at__isnull=True,
+        read_at__isnull=True,
+    ).exclude(sender=user)
+
+    if message_ids:
+        qs = qs.filter(id__in=message_ids)
+
+    ids = list(qs.values_list('id', flat=True))
+    if not ids:
+        return []
+
+    now = timezone.now()
+    Message.objects.filter(id__in=ids).update(read_at=now)
+    return ids
+
+
 def delete_message_for_user(message, user, scope):
     if not user_in_chat(message.chat, user):
         raise PermissionError('Нет доступа к чату')

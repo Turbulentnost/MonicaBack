@@ -117,7 +117,7 @@ class RegisterCompleteView(APIView):
         serializer.is_valid(raise_exception=True)
         user = complete_registration(serializer.validated_data['registration_token'])
         return Response({
-            'user': UserSerializer(user).data,
+            'user': UserSerializer(user, context={'request': request}).data,
             'tokens': _tokens_for_user(user),
         }, status=status.HTTP_201_CREATED)
 
@@ -136,7 +136,7 @@ class LoginView(APIView):
         if not user:
             return Response({'detail': 'Неверный email или пароль'}, status=401)
         return Response({
-            'user': UserSerializer(user).data,
+            'user': UserSerializer(user, context={'request': request}).data,
             'tokens': _tokens_for_user(user),
         })
 
@@ -145,4 +145,4 @@ class MeView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        return Response(UserSerializer(request.user).data)
+        return Response(UserSerializer(request.user, context={'request': request}).data)

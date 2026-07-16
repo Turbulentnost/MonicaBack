@@ -113,6 +113,13 @@ class PresenceConsumer(AsyncJsonWebsocketConsumer):
             'notification': event['notification'],
         })
 
+    async def chat_preview(self, event):
+        """Обновление last_message в списке чатов без открытия комнаты."""
+        await self.send_json({
+            'action': 'chat.preview',
+            'message': event['message'],
+        })
+
     def _cancel_pending_on_leave(self):
         from apps.notifications.services import cancel_user_pending_invites
         try:
