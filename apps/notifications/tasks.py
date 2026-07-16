@@ -51,3 +51,46 @@ def send_message_push(self, message_id: str, recipient_id: str):
         raise self.retry(exc=exc)
 
     return {'ok': True, **result}
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=30)
+def send_notification_push(self, notification_id: str):
+    """FCM-пуш для in-app уведомления (приватный чат и др.)."""
+    from apps.notifications.models import DeviceToken, Notification
+    from apps.notifications.fcm import send_fcm_to_tokens
+
+    try:
+        notification = Notification.objects.select_related('user').get(id=notification_id)
+    except Notification.DoesNotExist:
+        logger.warning('Notification %s not found for push', notification_id)
+        return {'ok': False, 'reason': 'notification_not_found'}
+
+    tokens = list(
+        DeviceToken.objects.filter(
+            user_id=notification.user_id,
+            is_active=True,
+        ).values_list('token', flat=True)
+    )
+    if not tokens:
+        logger.info('No device tokens for user %s — push skipped', notification.user_id)
+        return {'ok': True, 'sent': 0, 'reason': 'no_tokens'}
+
+    data = {
+        'type': notification.notification_type,
+        'notification_id': str(notification.id),
+    }
+    for key, value in (notification.payload or {}).items():
+        data[str(key)] = str(value)
+
+    try:
+        result = send_fcm_to_tokens(
+            tokens=tokens,
+            title=notification.title,
+            body=(notification.body or '')[:180],
+            data=data,
+        )
+    except Exception as exc:
+        logger.exception('FCM notification push failed')
+        raise self.retry(exc=exc)
+
+    return {'ok': True, **result}

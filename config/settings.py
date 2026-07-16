@@ -174,6 +174,21 @@ USER_SEARCH_CACHE_TTL = int(os.getenv('USER_SEARCH_CACHE_TTL', '90'))
 # Кэш presigned URL аватаров (секунды), меньше TTL MinIO (24ч)
 PHOTO_URL_CACHE_TTL = int(os.getenv('PHOTO_URL_CACHE_TTL', str(23 * 3600)))
 
+MESSAGE_DELETE_FOR_ALL_HOURS = int(os.getenv('MESSAGE_DELETE_FOR_ALL_HOURS', '48'))
+CHAT_FILE_MAX_SIZE_MB = int(os.getenv('CHAT_FILE_MAX_SIZE_MB', '300'))
+CHAT_IMAGE_MAX_SIZE_MB = int(os.getenv('CHAT_IMAGE_MAX_SIZE_MB', '300'))
+CHAT_ATTACHMENTS_MAX_COUNT = int(os.getenv('CHAT_ATTACHMENTS_MAX_COUNT', '10'))
+
+# До 300 МБ на вложение (память + диск при загрузке)
+DATA_UPLOAD_MAX_MEMORY_SIZE = CHAT_FILE_MAX_SIZE_MB * 1024 * 1024
+FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024  # крупные файлы — на диск
+
+CODE_RUN_TIMEOUT_SEC = int(os.getenv('CODE_RUN_TIMEOUT_SEC', '5'))
+CODE_RUN_MEMORY_MB = int(os.getenv('CODE_RUN_MEMORY_MB', '256'))
+CODE_RUN_MAX_OUTPUT_BYTES = int(os.getenv('CODE_RUN_MAX_OUTPUT_BYTES', '65536'))
+CODE_RUN_MAX_SOURCE_BYTES = int(os.getenv('CODE_RUN_MAX_SOURCE_BYTES', '200000'))
+CODE_RUN_RATE_LIMIT_SEC = int(os.getenv('CODE_RUN_RATE_LIMIT_SEC', '3'))
+
 
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', os.getenv('REDIS_URL', 'redis://localhost:6379/1'))
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', CELERY_BROKER_URL)

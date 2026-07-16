@@ -39,6 +39,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     photo = models.CharField(max_length=512, blank=True, default='')
     city = models.CharField(max_length=100, blank=True, default='')
     birth_date = models.DateField(null=True, blank=True)
+    last_seen_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     is_active = models.BooleanField(default=True)

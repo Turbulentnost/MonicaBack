@@ -3,8 +3,10 @@ from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.contrib.auth.models import AnonymousUser
 from django.utils import timezone
 
-from apps.chats.models import Chat, Message
+from apps.chats.models import Chat, Message, MessageType
 from apps.chats.services import user_in_chat
+
+VALID_MESSAGE_TYPES = {choice.value for choice in MessageType}
 
 
 class ChatConsumer(AsyncJsonWebsocketConsumer):
@@ -52,12 +54,25 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         )
 
     async def _handle_send_message(self, content):
-        message_type = content.get('message_type', 'text')
-        text_content = content.get('content', '').strip()
+        message_type = content.get('message_type', MessageType.TEXT)
+        if message_type not in VALID_MESSAGE_TYPES:
+            message_type = MessageType.TEXT
+
+        text_content = (content.get('content') or '').strip()
         if not text_content:
             return
 
-        message = await self._create_message(message_type, text_content)
+        file_name = (content.get('file_name') or '').strip()
+        mime_type = (content.get('mime_type') or '').strip()
+        file_size = content.get('file_size')
+
+        message = await self._create_message(
+            message_type,
+            text_content,
+            file_name=file_name,
+            mime_type=mime_type,
+            file_size=file_size,
+        )
         if not message:
             return
 
@@ -72,8 +87,13 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
     async def chat_message(self, event):
         await self.send_json({'action': 'message.new', 'message': event['message']})
 
+    async def chat_message_deleted(self, event):
+        await self.send_json({
+            'action': 'message.deleted',
+            'message_id': event['message_id'],
+        })
+
     async def chat_typing(self, event):
-        # Не дублируем typing самому отправителю
         if str(self.user.id) == str(event.get('user_id')):
             return
         await self.send_json({
@@ -92,7 +112,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         return user_in_chat(chat, self.user)
 
     @database_sync_to_async
-    def _create_message(self, message_type, content):
+    def _create_message(self, message_type, content, file_name='', mime_type='', file_size=None):
         try:
             chat = Chat.objects.get(id=self.chat_id)
         except Chat.DoesNotExist:
@@ -105,6 +125,9 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             sender=self.user,
             message_type=message_type,
             content=content,
+            file_name=file_name,
+            mime_type=mime_type,
+            file_size=file_size,
         )
         chat.updated_at = timezone.now()
         chat.save(update_fields=['updated_at'])
@@ -122,5 +145,4 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
     def _serialize_message(self, message):
         import json
         from apps.chats.serializers import MessageSerializer
-        # msgpack/Redis не умеет UUID — приводим к JSON-совместимому dict
         return json.loads(json.dumps(MessageSerializer(message).data, default=str))

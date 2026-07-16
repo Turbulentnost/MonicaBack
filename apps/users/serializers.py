@@ -54,12 +54,14 @@ class LoginSerializer(serializers.Serializer):
 
 class UserSerializer(serializers.ModelSerializer):
     photo_url = serializers.SerializerMethodField()
+    is_online = serializers.SerializerMethodField()
 
     class Meta:
         model = User
         fields = [
             'id', 'email', 'role', 'first_name', 'last_name', 'nickname',
-            'photo', 'photo_url', 'city', 'birth_date', 'created_at', 'updated_at',
+            'photo', 'photo_url', 'is_online', 'last_seen_at', 'city', 'birth_date',
+            'created_at', 'updated_at',
         ]
         read_only_fields = fields
 
@@ -68,6 +70,10 @@ class UserSerializer(serializers.ModelSerializer):
             return None
         from apps.users.services.minio_service import get_presigned_url
         return get_presigned_url(obj.photo)
+
+    def get_is_online(self, obj):
+        from apps.chats.presence import is_user_online
+        return is_user_online(obj.id)
 
 
 def _email_code_key(email):

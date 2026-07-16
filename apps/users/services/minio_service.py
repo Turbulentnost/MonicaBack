@@ -77,3 +77,44 @@ def get_presigned_url(object_path, expires_hours=24):
     ttl = getattr(settings, 'PHOTO_URL_CACHE_TTL', max(3600, (expires_hours - 1) * 3600))
     cache.set(cache_key, url, ttl)
     return url
+
+
+def delete_object(object_path):
+    if not object_path:
+        return False
+    parts = object_path.split('/', 1)
+    if len(parts) != 2:
+        return False
+    bucket, object_name = parts
+    client = get_minio_client()
+    try:
+        client.remove_object(bucket, object_name)
+    except S3Error:
+        return False
+    invalidate_presigned_url(object_path)
+    return True
+
+
+def download_object_bytes(object_path, max_bytes=None):
+    """Скачать объект из MinIO в память. max_bytes — жёсткий потолок."""
+    if not object_path:
+        return None
+    parts = object_path.split('/', 1)
+    if len(parts) != 2:
+        return None
+    bucket, object_name = parts
+    client = get_minio_client()
+    try:
+        response = client.get_object(bucket, object_name)
+        try:
+            if max_bytes is None:
+                return response.read()
+            data = response.read(max_bytes + 1)
+            if len(data) > max_bytes:
+                raise ValueError('Файл слишком большой для запуска')
+            return data
+        finally:
+            response.close()
+            response.release_conn()
+    except S3Error:
+        return None
