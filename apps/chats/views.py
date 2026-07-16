@@ -78,12 +78,29 @@ class ChatMessagesView(APIView):
         except Chat.DoesNotExist:
             return Response({'detail': 'Чат не найден'}, status=404)
 
-        messages = get_visible_messages(chat, request.user).order_by('sent_at')
-        page_size = int(request.query_params.get('limit', 50))
-        offset = int(request.query_params.get('offset', 0))
-        sliced = messages[offset:offset + page_size]
+        # Последние N сообщений (хронологически), а не первые N с начала истории.
+        qs = get_visible_messages(chat, request.user).order_by('-sent_at')
+        try:
+            page_size = int(request.query_params.get('limit', 50))
+        except (TypeError, ValueError):
+            page_size = 50
+        page_size = max(1, min(page_size, 200))
+
+        before_id = request.query_params.get('before')
+        if before_id:
+            pivot = (
+                get_visible_messages(chat, request.user)
+                .filter(id=before_id)
+                .values_list('sent_at', flat=True)
+                .first()
+            )
+            if pivot is not None:
+                qs = qs.filter(sent_at__lt=pivot)
+
+        page = list(qs[:page_size])
+        page.reverse()
         return Response(
-            MessageSerializer(sliced, many=True, context={'request': request}).data
+            MessageSerializer(page, many=True, context={'request': request}).data
         )
 
 

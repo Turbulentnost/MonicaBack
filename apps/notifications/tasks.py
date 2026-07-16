@@ -33,7 +33,13 @@ def send_message_push(self, message_id: str, recipient_id: str):
         return {'ok': True, 'sent': 0, 'reason': 'no_tokens'}
 
     title = message.sender.nickname
-    body = message.content[:120] if message.message_type == 'text' else f'[{message.message_type}]'
+    body = (
+        message.content[:120]
+        if message.message_type == 'text'
+        else 'Голосовое сообщение'
+        if message.message_type == 'voice'
+        else f'[{message.message_type}]'
+    )
 
     try:
         result = send_fcm_to_tokens(
@@ -44,6 +50,8 @@ def send_message_push(self, message_id: str, recipient_id: str):
                 'type': 'chat_message',
                 'chat_id': str(message.chat_id),
                 'message_id': str(message.id),
+                'title': title,
+                'body': body,
             },
         )
     except Exception as exc:

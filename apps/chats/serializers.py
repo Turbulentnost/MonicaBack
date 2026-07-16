@@ -14,12 +14,12 @@ class MessageSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'chat', 'sender', 'message_type', 'content', 'content_url',
             'file_name', 'mime_type', 'file_size', 'forwarded_from', 'sent_at',
-            'read_at',
+            'read_at', 'waveform', 'voice_duration_ms',
         ]
         read_only_fields = fields
 
     def get_content_url(self, obj):
-        if obj.message_type in ('photo', 'file') and obj.content:
+        if obj.message_type in ('photo', 'file', 'voice') and obj.content:
             return get_presigned_url(obj.content)
         return None
 
@@ -33,5 +33,7 @@ class ChatListSerializer(serializers.Serializer):
 
 class SendMessageSerializer(serializers.Serializer):
     recipient_id = serializers.UUIDField(required=False)
-    message_type = serializers.ChoiceField(choices=['text', 'photo', 'file', 'code', 'forward'])
+    message_type = serializers.ChoiceField(
+        choices=['text', 'photo', 'file', 'voice', 'code', 'forward']
+    )
     content = serializers.CharField()

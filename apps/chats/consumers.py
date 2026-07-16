@@ -70,6 +70,18 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         file_name = (content.get('file_name') or '').strip()
         mime_type = (content.get('mime_type') or '').strip()
         file_size = content.get('file_size')
+        waveform = content.get('waveform') or []
+        if not isinstance(waveform, list):
+            waveform = []
+        waveform = [
+            max(0.0, min(1.0, float(value)))
+            for value in waveform[:128]
+            if isinstance(value, (int, float))
+        ]
+        try:
+            voice_duration_ms = max(0, int(content.get('voice_duration_ms') or 0))
+        except (TypeError, ValueError):
+            voice_duration_ms = 0
 
         message = await self._create_message(
             message_type,
@@ -77,6 +89,8 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             file_name=file_name,
             mime_type=mime_type,
             file_size=file_size,
+            waveform=waveform,
+            voice_duration_ms=voice_duration_ms or None,
         )
         if not message:
             return
@@ -143,7 +157,16 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         return user_in_chat(chat, self.user)
 
     @database_sync_to_async
-    def _create_message(self, message_type, content, file_name='', mime_type='', file_size=None):
+    def _create_message(
+        self,
+        message_type,
+        content,
+        file_name='',
+        mime_type='',
+        file_size=None,
+        waveform=None,
+        voice_duration_ms=None,
+    ):
         try:
             chat = Chat.objects.get(id=self.chat_id)
         except Chat.DoesNotExist:
@@ -159,6 +182,8 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             file_name=file_name,
             mime_type=mime_type,
             file_size=file_size,
+            waveform=waveform or [],
+            voice_duration_ms=voice_duration_ms,
         )
         chat.updated_at = timezone.now()
         chat.save(update_fields=['updated_at'])

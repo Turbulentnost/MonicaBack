@@ -56,12 +56,13 @@ class PresenceConsumer(AsyncJsonWebsocketConsumer):
             user_channel_group(self.user_id), self.channel_name
         )
         if fully_offline:
-            # Пауза: при F5 / кратком reconnect не рвём сессии
+            # Пауза: при F5 / кратком reconnect не помечаем offline.
+            # Pending-инвайты НЕ отменяем здесь: на мобилке WS часто рвётся
+            # на 2–5 с (Doze / сеть), и автоdecline убивал приглашения до Accept.
+            # Отмена заявок — только через leave / explicit cancel / decline.
             await asyncio.sleep(2.5)
             still_offline = not await database_sync_to_async(is_user_online)(self.user_id)
             if still_offline:
-                # Только заявки (pending). Активный приват не трогаем.
-                await database_sync_to_async(self._cancel_pending_on_leave)()
                 last_seen = await database_sync_to_async(record_last_seen)(self.user_id)
                 await self.channel_layer.group_send(
                     PRESENCE_GROUP,
@@ -119,13 +120,6 @@ class PresenceConsumer(AsyncJsonWebsocketConsumer):
             'action': 'chat.preview',
             'message': event['message'],
         })
-
-    def _cancel_pending_on_leave(self):
-        from apps.notifications.services import cancel_user_pending_invites
-        try:
-            cancel_user_pending_invites(self.user)
-        except Exception:
-            pass
 
     async def _mark_online(self):
         return await database_sync_to_async(mark_user_online)(self.user_id)

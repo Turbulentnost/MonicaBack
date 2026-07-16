@@ -1,7 +1,9 @@
 import uuid
+from mimetypes import guess_type
 
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
+from django.http import HttpResponse
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -19,7 +21,7 @@ from apps.users.serializers import (
     send_verification_code,
     update_registration_session,
 )
-from apps.users.services.minio_service import upload_file
+from apps.users.services.minio_service import download_object_bytes, upload_file
 
 User = get_user_model()
 
@@ -146,3 +148,31 @@ class MeView(APIView):
 
     def get(self, request):
         return Response(UserSerializer(request.user, context={'request': request}).data)
+
+
+class UserAvatarView(APIView):
+    """Отдаёт аватар по user id, не полагаясь на presigned URL MinIO."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, user_id):
+        try:
+            user = User.objects.only('photo', 'updated_at').get(id=user_id)
+        except User.DoesNotExist:
+            return Response({'detail': 'Пользователь не найден'}, status=404)
+
+        if not user.photo:
+            return Response({'detail': 'Аватар не установлен'}, status=404)
+
+        try:
+            data = download_object_bytes(user.photo, max_bytes=20 * 1024 * 1024)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=400)
+        if data is None:
+            return Response({'detail': 'Аватар не найден в хранилище'}, status=404)
+
+        content_type = guess_type(user.photo)[0] or 'image/jpeg'
+        response = HttpResponse(data, content_type=content_type)
+        response['Cache-Control'] = 'private, max-age=3600'
+        response['ETag'] = f'"{user.photo}:{user.updated_at.timestamp()}"'
+        return response

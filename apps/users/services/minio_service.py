@@ -1,5 +1,6 @@
 import io
 from datetime import timedelta
+from urllib.parse import urlparse
 
 from django.conf import settings
 from django.core.cache import cache
@@ -16,6 +17,23 @@ def get_minio_client():
     )
 
 
+def get_minio_presign_client():
+    """Клиент только для подписи URL с host, доступным браузеру и телефону."""
+    public = (getattr(settings, 'MINIO_PUBLIC_ENDPOINT', '') or '').strip()
+    if not public:
+        return get_minio_client()
+
+    parsed = urlparse(public if '://' in public else f'http://{public}')
+    endpoint = parsed.netloc or parsed.path
+    secure = parsed.scheme == 'https' if parsed.scheme else settings.MINIO_USE_SSL
+    return Minio(
+        endpoint,
+        access_key=settings.MINIO_ACCESS_KEY,
+        secret_key=settings.MINIO_SECRET_KEY,
+        secure=secure,
+    )
+
+
 def ensure_buckets():
     client = get_minio_client()
     for bucket in (settings.MINIO_BUCKET_AVATARS, settings.MINIO_BUCKET_CHAT_FILES):
@@ -24,7 +42,9 @@ def ensure_buckets():
 
 
 def _presigned_cache_key(object_path):
-    return f'presigned_url:{object_path}'
+    # Public host входит в AWS Signature. Старый URL для другого host использовать нельзя.
+    public = (getattr(settings, 'MINIO_PUBLIC_ENDPOINT', '') or '').strip()
+    return f'presigned_url:{public}:{object_path}'
 
 
 def invalidate_presigned_url(object_path):
@@ -52,22 +72,6 @@ def upload_file(bucket, object_name, file_data, content_type):
     return path
 
 
-def _rewrite_public_url(url):
-    """Подменить host MinIO на публичный (LAN IP), чтобы телефоны видели файлы."""
-    public = (getattr(settings, 'MINIO_PUBLIC_ENDPOINT', None) or '').strip()
-    if not url or not public:
-        return url
-    from urllib.parse import urlparse, urlunparse
-
-    parsed = urlparse(url)
-    public_parsed = urlparse(public if '://' in public else f'http://{public}')
-    scheme = public_parsed.scheme or parsed.scheme or 'http'
-    netloc = public_parsed.netloc or public_parsed.path
-    if not netloc:
-        return url
-    return urlunparse(parsed._replace(scheme=scheme, netloc=netloc))
-
-
 def get_presigned_url(object_path, expires_hours=24):
     if not object_path:
         return None
@@ -78,10 +82,10 @@ def get_presigned_url(object_path, expires_hours=24):
     cache_key = _presigned_cache_key(object_path)
     cached = cache.get(cache_key)
     if cached:
-        return _rewrite_public_url(cached)
+        return cached
 
     bucket, object_name = parts
-    client = get_minio_client()
+    client = get_minio_presign_client()
     try:
         url = client.presigned_get_object(
             bucket, object_name, expires=timedelta(hours=expires_hours)
@@ -92,7 +96,7 @@ def get_presigned_url(object_path, expires_hours=24):
     # Чуть меньше срока MinIO, чтобы не отдавать уже просроченный URL
     ttl = getattr(settings, 'PHOTO_URL_CACHE_TTL', max(3600, (expires_hours - 1) * 3600))
     cache.set(cache_key, url, ttl)
-    return _rewrite_public_url(url)
+    return url
 
 
 def delete_object(object_path):

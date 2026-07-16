@@ -16,6 +16,14 @@ ALLOWED_IMAGE_TYPES = {
     'image/jpeg', 'image/png', 'image/gif', 'image/webp',
 }
 ALLOWED_FILE_TYPES = ALLOWED_IMAGE_TYPES | {
+    'audio/mp4',
+    'audio/m4a',
+    'audio/x-m4a',
+    'audio/aac',
+    'audio/mpeg',
+    'audio/ogg',
+    'audio/webm',
+    'application/ogg',
     'application/pdf',
     'application/msword',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -84,6 +92,14 @@ def _extension_for_upload(filename, content_type):
         'image/png': '.png',
         'image/gif': '.gif',
         'image/webp': '.webp',
+        'audio/mp4': '.m4a',
+        'audio/m4a': '.m4a',
+        'audio/x-m4a': '.m4a',
+        'audio/aac': '.aac',
+        'audio/mpeg': '.mp3',
+        'audio/ogg': '.ogg',
+        'audio/webm': '.webm',
+        'application/ogg': '.ogg',
         'application/pdf': '.pdf',
         'text/plain': '.txt',
         'text/x-python': '.py',
@@ -105,7 +121,10 @@ def upload_chat_file(chat, user, uploaded_file):
     is_python = ext == '.py'
     is_javascript = ext == '.js'
     image_exts = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
-    known_exts = image_exts | {'.py', '.js', '.pdf', '.doc', '.docx', '.txt'}
+    audio_exts = {'.m4a', '.aac', '.mp3', '.ogg', '.opus', '.webm'}
+    known_exts = image_exts | audio_exts | {
+        '.py', '.js', '.pdf', '.doc', '.docx', '.txt'
+    }
 
     # Браузер часто врёт MIME — доверяем расширению
     if ext in image_exts and content_type not in ALLOWED_IMAGE_TYPES:
@@ -129,6 +148,7 @@ def upload_chat_file(chat, user, uploaded_file):
         content_type = 'text/javascript'
 
     is_image = content_type in ALLOWED_IMAGE_TYPES or ext in image_exts
+    is_audio = content_type.startswith('audio/') or ext in audio_exts
     max_bytes = (
         settings.CHAT_IMAGE_MAX_SIZE_MB if is_image else settings.CHAT_FILE_MAX_SIZE_MB
     ) * 1024 * 1024
@@ -146,7 +166,11 @@ def upload_chat_file(chat, user, uploaded_file):
         uploaded_file,
         content_type,
     )
-    message_type = MessageType.PHOTO if is_image else MessageType.FILE
+    message_type = (
+        MessageType.PHOTO if is_image
+        else MessageType.VOICE if is_audio
+        else MessageType.FILE
+    )
     return {
         'path': path,
         'content_url': get_presigned_url(path),
@@ -239,7 +263,9 @@ def delete_message_for_user(message, user, scope):
     if not can_delete_for_everyone(message, user):
         raise PermissionError('Нельзя удалить у всех')
 
-    if message.message_type in (MessageType.PHOTO, MessageType.FILE) and message.content:
+    if message.message_type in (
+        MessageType.PHOTO, MessageType.FILE, MessageType.VOICE
+    ) and message.content:
         delete_object(message.content)
 
     message.deleted_at = timezone.now()

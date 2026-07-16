@@ -8,6 +8,7 @@ class MessageType(models.TextChoices):
     TEXT = 'text', 'Текст'
     PHOTO = 'photo', 'Фото'
     FILE = 'file', 'Файл'
+    VOICE = 'voice', 'Голосовое сообщение'
     CODE = 'code', 'Код'
     FORWARD = 'forward', 'Пересылка'
 
@@ -45,6 +46,8 @@ class Message(models.Model):
     file_name = models.CharField(max_length=255, blank=True, default='')
     mime_type = models.CharField(max_length=128, blank=True, default='')
     file_size = models.PositiveIntegerField(null=True, blank=True)
+    waveform = models.JSONField(default=list, blank=True)
+    voice_duration_ms = models.PositiveIntegerField(null=True, blank=True)
     forwarded_from = models.ForeignKey(
         'self', null=True, blank=True, on_delete=models.SET_NULL, related_name='forwards'
     )
