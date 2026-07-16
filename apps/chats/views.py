@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.db.models import Q
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -6,7 +7,7 @@ from rest_framework.views import APIView
 
 from apps.chats.models import Chat, Message
 from apps.chats.serializers import MessageSerializer
-from apps.chats.services import get_chat_partner, get_or_create_direct_chat, get_user_chats, user_in_chat
+from apps.chats.services import get_chat_partner, get_or_create_direct_chat, get_user_chats
 from apps.users.serializers import UserSerializer
 
 User = get_user_model()
@@ -72,8 +73,30 @@ class UserSearchView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        import json
+        from django.conf import settings
+        from django.core.cache import cache
+        from rest_framework.renderers import JSONRenderer
+
         q = request.query_params.get('q', '').strip()
         if len(q) < 2:
             return Response([])
-        users = User.objects.filter(nickname__icontains=q).exclude(id=request.user.id)[:20]
-        return Response(UserSerializer(users, many=True).data)
+
+        cache_key = f'user_search:{request.user.id}:{q.lower()}'
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
+        users = (
+            User.objects.filter(
+                Q(nickname__icontains=q)
+                | Q(first_name__icontains=q)
+                | Q(last_name__icontains=q)
+                | Q(email__icontains=q)
+            )
+            .exclude(id=request.user.id)
+            .distinct()[:20]
+        )
+        payload = json.loads(JSONRenderer().render(UserSerializer(users, many=True).data))
+        cache.set(cache_key, payload, settings.USER_SEARCH_CACHE_TTL)
+        return Response(payload)

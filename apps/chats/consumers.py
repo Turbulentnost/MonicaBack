@@ -1,5 +1,3 @@
-import json
-
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.contrib.auth.models import AnonymousUser
@@ -28,12 +26,30 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
 
     async def disconnect(self, close_code):
         if hasattr(self, 'room_group_name'):
+            await self._broadcast_typing(False)
             await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
 
     async def receive_json(self, content, **kwargs):
         action = content.get('action')
         if action == 'message.send':
             await self._handle_send_message(content)
+        elif action == 'typing.start':
+            await self._broadcast_typing(True)
+        elif action == 'typing.stop':
+            await self._broadcast_typing(False)
+
+    async def _broadcast_typing(self, is_typing):
+        if not hasattr(self, 'room_group_name'):
+            return
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                'type': 'chat.typing',
+                'user_id': str(self.user.id),
+                'nickname': self.user.nickname,
+                'is_typing': is_typing,
+            },
+        )
 
     async def _handle_send_message(self, content):
         message_type = content.get('message_type', 'text')
@@ -45,6 +61,8 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         if not message:
             return
 
+        await self._broadcast_typing(False)
+
         payload = await self._serialize_message(message)
         await self.channel_layer.group_send(
             self.room_group_name,
@@ -53,6 +71,17 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
 
     async def chat_message(self, event):
         await self.send_json({'action': 'message.new', 'message': event['message']})
+
+    async def chat_typing(self, event):
+        # Не дублируем typing самому отправителю
+        if str(self.user.id) == str(event.get('user_id')):
+            return
+        await self.send_json({
+            'action': 'typing.update',
+            'user_id': event['user_id'],
+            'nickname': event['nickname'],
+            'is_typing': event['is_typing'],
+        })
 
     @database_sync_to_async
     def _user_in_chat(self):
@@ -79,9 +108,19 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         )
         chat.updated_at = timezone.now()
         chat.save(update_fields=['updated_at'])
+
+        recipient_ids = list(
+            chat.participants.exclude(user=self.user).values_list('user_id', flat=True)
+        )
+        from apps.notifications.tasks import send_message_push
+        for recipient_id in recipient_ids:
+            send_message_push.delay(str(message.id), str(recipient_id))
+
         return message
 
     @database_sync_to_async
     def _serialize_message(self, message):
+        import json
         from apps.chats.serializers import MessageSerializer
-        return MessageSerializer(message).data
+        # msgpack/Redis не умеет UUID — приводим к JSON-совместимому dict
+        return json.loads(json.dumps(MessageSerializer(message).data, default=str))

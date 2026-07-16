@@ -1,6 +1,8 @@
 import io
+from datetime import timedelta
 
 from django.conf import settings
+from django.core.cache import cache
 from minio import Minio
 from minio.error import S3Error
 
@@ -21,6 +23,15 @@ def ensure_buckets():
             client.make_bucket(bucket)
 
 
+def _presigned_cache_key(object_path):
+    return f'presigned_url:{object_path}'
+
+
+def invalidate_presigned_url(object_path):
+    if object_path:
+        cache.delete(_presigned_cache_key(object_path))
+
+
 def upload_file(bucket, object_name, file_data, content_type):
     client = get_minio_client()
     file_data.seek(0)
@@ -36,7 +47,9 @@ def upload_file(bucket, object_name, file_data, content_type):
         length=size,
         content_type=content_type,
     )
-    return f'{bucket}/{object_name}'
+    path = f'{bucket}/{object_name}'
+    invalidate_presigned_url(path)
+    return path
 
 
 def get_presigned_url(object_path, expires_hours=24):
@@ -45,12 +58,22 @@ def get_presigned_url(object_path, expires_hours=24):
     parts = object_path.split('/', 1)
     if len(parts) != 2:
         return None
+
+    cache_key = _presigned_cache_key(object_path)
+    cached = cache.get(cache_key)
+    if cached:
+        return cached
+
     bucket, object_name = parts
-    from datetime import timedelta
     client = get_minio_client()
     try:
-        return client.presigned_get_object(
+        url = client.presigned_get_object(
             bucket, object_name, expires=timedelta(hours=expires_hours)
         )
     except S3Error:
         return None
+
+    # Чуть меньше срока MinIO, чтобы не отдавать уже просроченный URL
+    ttl = getattr(settings, 'PHOTO_URL_CACHE_TTL', max(3600, (expires_hours - 1) * 3600))
+    cache.set(cache_key, url, ttl)
+    return url
