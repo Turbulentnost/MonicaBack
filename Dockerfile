@@ -14,4 +14,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["celery", "-A", "config", "worker", "-l", "info", "-Q", "celery"]
+RUN chmod +x entrypoint.sh
+
+CMD ["./entrypoint.sh"]
