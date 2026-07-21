@@ -121,6 +121,9 @@ class PresenceConsumer(AsyncJsonWebsocketConsumer):
             'message': event['message'],
         })
 
+    async def call_event(self, event):
+        await self.send_json(event['data'])
+
     async def _mark_online(self):
         return await database_sync_to_async(mark_user_online)(self.user_id)
 

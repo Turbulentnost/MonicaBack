@@ -6,6 +6,19 @@ from django.conf import settings
 logger = logging.getLogger(__name__)
 
 
+@shared_task
+def expire_call(call_id: str):
+    """Idempotently turn an unanswered ringing call into a missed call."""
+    from apps.chats.call_services import expire_ringing_call
+
+    call, changed = expire_ringing_call(call_id)
+    return {
+        'ok': call is not None,
+        'changed': changed,
+        'status': call.status if call else None,
+    }
+
+
 @shared_task(bind=True, max_retries=3, default_retry_delay=30)
 def send_message_push(self, message_id: str, recipient_id: str):
     """

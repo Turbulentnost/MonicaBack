@@ -115,3 +115,64 @@ class PrivateSession(models.Model):
 
     def __str__(self):
         return f'{self.id}:{self.status}'
+
+
+class CallStatus(models.TextChoices):
+    RINGING = 'ringing', 'Вызов'
+    ACTIVE = 'active', 'Активен'
+    REJECTED = 'rejected', 'Отклонён'
+    CANCELLED = 'cancelled', 'Отменён'
+    MISSED = 'missed', 'Пропущен'
+    ENDED = 'ended', 'Завершён'
+    FAILED = 'failed', 'Ошибка'
+
+
+class CallSession(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    chat = models.ForeignKey(Chat, on_delete=models.CASCADE, related_name='calls')
+    caller = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='calls_started',
+    )
+    callee = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='calls_received',
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=CallStatus.choices,
+        default=CallStatus.RINGING,
+    )
+    client_instance_id = models.UUIDField()
+    accepted_client_instance_id = models.UUIDField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    connected_at = models.DateTimeField(null=True, blank=True)
+    ended_at = models.DateTimeField(null=True, blank=True)
+    ended_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='calls_ended',
+    )
+    end_reason = models.CharField(max_length=64, blank=True, default='')
+
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['caller', 'client_instance_id'],
+                condition=models.Q(status__in=['ringing', 'active']),
+                name='unique_active_call_client_instance',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['caller', 'status']),
+            models.Index(fields=['callee', 'status']),
+        ]
+
+    def __str__(self):
+        return f'{self.id}:{self.status}'
