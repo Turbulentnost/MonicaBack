@@ -85,7 +85,45 @@ class ChatMessagesView(APIView):
             page_size = 100
         page_size = max(1, min(page_size, 200))
 
+        query = (request.query_params.get('q') or '').strip()
+        around_id = request.query_params.get('around')
         before_id = request.query_params.get('before')
+        visible = get_visible_messages(chat, request.user)
+
+        if query:
+            qs = (
+                visible.filter(Q(content__icontains=query) | Q(file_name__icontains=query))
+                .order_by('-sent_at')
+            )
+            page = list(qs[:page_size])
+            return Response(
+                MessageSerializer(page, many=True, context={'request': request}).data
+            )
+
+        if around_id:
+            pivot = visible.filter(id=around_id).values('sent_at').first()
+            if not pivot:
+                return Response({'detail': 'Сообщение не найдено'}, status=404)
+            older = list(
+                visible.filter(sent_at__lt=pivot['sent_at'])
+                .order_by('-sent_at')[: page_size // 2]
+            )
+            newer_limit = max(1, page_size - len(older))
+            newer = list(
+                visible.filter(sent_at__gte=pivot['sent_at'])
+                .order_by('sent_at')[:newer_limit]
+            )
+            if len(older) + len(newer) < page_size:
+                extra = page_size - len(older) - len(newer)
+                older = list(
+                    visible.filter(sent_at__lt=pivot['sent_at'])
+                    .order_by('-sent_at')[: len(older) + extra]
+                )
+            page = list(reversed(older)) + newer
+            return Response(
+                MessageSerializer(page, many=True, context={'request': request}).data
+            )
+
         version = get_chat_history_cache_version(chat.id)
         cache_key = (
             f'chat-history:{chat.id}:{request.user.id}:{version}:'
@@ -96,11 +134,10 @@ class ChatMessagesView(APIView):
             return Response(cached_page)
 
         # Последние N сообщений (хронологически), а не первые N с начала истории.
-        qs = get_visible_messages(chat, request.user).order_by('-sent_at')
+        qs = visible.order_by('-sent_at')
         if before_id:
             pivot = (
-                get_visible_messages(chat, request.user)
-                .filter(id=before_id)
+                visible.filter(id=before_id)
                 .values_list('sent_at', flat=True)
                 .first()
             )

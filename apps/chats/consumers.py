@@ -33,8 +33,8 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         self.room_group_name = f'chat_{self.chat_id}'
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
-        # Открыли чат — отмечаем входящие как прочитанные
-        await self._mark_read()
+        # Read receipts are client-driven (messages.read) so idle open tabs
+        # do not auto-mark incoming messages as read.
 
     async def disconnect(self, close_code):
         if hasattr(self, 'room_group_name'):
