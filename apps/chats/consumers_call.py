@@ -98,12 +98,7 @@ class CallSignalingConsumer(AsyncJsonWebsocketConsumer):
                 'detail': 'Звонок уже завершён',
             })
             return
-        if action == 'call.offer' and self.user.id != call.caller_id:
-            await self._forbidden('Offer может отправить только инициатор')
-            return
-        if action == 'call.answer' and self.user.id != call.callee_id:
-            await self._forbidden('Answer может отправить только вызываемый пользователь')
-            return
+        # Either participant may renegotiate (e.g. camera on/off).
         if call.status != CallStatus.ACTIVE:
             await self.send_json({
                 'action': 'call.error',

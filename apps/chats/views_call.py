@@ -17,11 +17,13 @@ from apps.chats.call_services import (
     hangup_call,
     reject_call,
     serialize_call,
+    set_call_media_mode,
     start_call,
 )
 from apps.chats.serializers_call import (
     AcceptCallSerializer,
     EndCallSerializer,
+    MediaModeSerializer,
     StartCallSerializer,
 )
 
@@ -44,6 +46,7 @@ class StartCallView(APIView):
                 chat_id,
                 request.user,
                 serializer.validated_data['client_instance_id'],
+                serializer.validated_data.get('media_mode'),
             )
         except CallError as exc:
             return call_error_response(exc)
@@ -102,6 +105,23 @@ class CancelCallView(CallActionView):
 
 class HangupCallView(CallActionView):
     action = 'hangup'
+
+
+class CallMediaModeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, call_id):
+        serializer = MediaModeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            call, _ = set_call_media_mode(
+                call_id,
+                request.user,
+                serializer.validated_data['media_mode'],
+            )
+        except CallError as exc:
+            return call_error_response(exc)
+        return Response(serialize_call(call, request))
 
 
 class ActiveCallView(APIView):

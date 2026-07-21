@@ -1,7 +1,7 @@
 import uuid
 from unittest.mock import patch
 
-from asgiref.sync import async_to_sync
+from asgiref.sync import async_to_sync, sync_to_async
 from channels.routing import URLRouter
 from channels.testing import WebsocketCommunicator
 from django.core.cache import cache
@@ -15,10 +15,11 @@ from apps.chats.call_services import (
     busy_key,
     expire_ringing_call,
     hangup_call,
+    set_call_media_mode,
     start_call,
 )
 from apps.chats.consumers_call import CallSignalingConsumer
-from apps.chats.models import CallSession, CallStatus, Chat, ChatParticipant
+from apps.chats.models import CallMediaMode, CallSession, CallStatus, Chat, ChatParticipant
 from apps.users.models import User
 
 
@@ -143,6 +144,57 @@ class CallServiceAndEndpointTests(TransactionTestCase):
         self.assertIsNone(cache.get(busy_key(self.caller.id)))
         self.assertIsNone(cache.get(busy_key(self.callee.id)))
 
+    @patch('apps.chats.call_services.broadcast_call_signal')
+    @patch('apps.chats.call_services.broadcast_user_event')
+    @patch('apps.chats.call_services._schedule_expiry')
+    @patch('apps.chats.call_services.is_user_online', return_value=True)
+    def test_video_start_and_media_mode_upgrade(
+        self, _online, _schedule, _broadcast, _signal
+    ):
+        video_call, created = start_call(
+            self.chat.id,
+            self.caller,
+            uuid.uuid4(),
+            media_mode=CallMediaMode.VIDEO,
+        )
+        self.assertTrue(created)
+        self.assertEqual(video_call.media_mode, CallMediaMode.VIDEO)
+        expire_ringing_call(video_call.id)
+
+        audio_call, created = start_call(
+            self.chat.id,
+            self.caller,
+            uuid.uuid4(),
+            media_mode=CallMediaMode.AUDIO,
+        )
+        self.assertTrue(created)
+        self.assertEqual(audio_call.media_mode, CallMediaMode.AUDIO)
+        accept_call(audio_call.id, self.callee, uuid.uuid4())
+        upgraded, changed = set_call_media_mode(
+            audio_call.id, self.caller, CallMediaMode.VIDEO
+        )
+        self.assertTrue(changed)
+        self.assertEqual(upgraded.media_mode, CallMediaMode.VIDEO)
+        again, changed = set_call_media_mode(
+            audio_call.id, self.callee, CallMediaMode.VIDEO
+        )
+        self.assertFalse(changed)
+        self.assertEqual(again.media_mode, CallMediaMode.VIDEO)
+
+        client = APIClient()
+        client.force_authenticate(self.caller)
+        hangup_call(audio_call.id, self.caller)
+        response = client.post(
+            f'/api/chats/{self.chat.id}/calls/start/',
+            {
+                'client_instance_id': str(uuid.uuid4()),
+                'media_mode': 'video',
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['media_mode'], CallMediaMode.VIDEO)
+
 
 @override_settings(CACHES=TEST_CACHES, CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
 class CallConsumerTests(TransactionTestCase):
@@ -212,14 +264,45 @@ class CallConsumerTests(TransactionTestCase):
         ready = await callee.receive_json_from()
         self.assertEqual(ready['action'], 'call.ready')
 
+        # Signaling before ACTIVE is rejected (accept required first).
         await callee.send_json_to({
             'action': 'call.offer',
             'data': {'type': 'offer', 'sdp': 'test'},
         })
         error = await callee.receive_json_from()
         self.assertEqual(error['action'], 'call.error')
-        self.assertEqual(error['code'], 'forbidden')
+        self.assertEqual(error['code'], 'invalid_state')
         await callee.disconnect()
+
+        # After accept, either participant may offer (renegotiation / camera).
+        await sync_to_async(CallSession.objects.filter(id=self.call.id).update)(
+            status=CallStatus.ACTIVE,
+        )
+        callee = WebsocketCommunicator(
+            self.application,
+            f'/ws/call/{self.call.id}/',
+        )
+        callee.scope['user'] = self.callee
+        connected, _ = await callee.connect()
+        self.assertTrue(connected)
+        await callee.receive_json_from()
+        caller = WebsocketCommunicator(
+            self.application,
+            f'/ws/call/{self.call.id}/',
+        )
+        caller.scope['user'] = self.caller
+        connected, _ = await caller.connect()
+        self.assertTrue(connected)
+        await caller.receive_json_from()
+        await callee.send_json_to({
+            'action': 'call.offer',
+            'data': {'sdp': {'type': 'offer', 'sdp': 'renegotiate'}},
+        })
+        relayed = await caller.receive_json_from()
+        self.assertEqual(relayed['action'], 'call.offer')
+        self.assertEqual(relayed['from_user_id'], str(self.callee.id))
+        await callee.disconnect()
+        await caller.disconnect()
 
     async def _targeted_relay_scenario(self):
         caller = WebsocketCommunicator(

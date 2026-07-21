@@ -127,6 +127,11 @@ class CallStatus(models.TextChoices):
     FAILED = 'failed', 'Ошибка'
 
 
+class CallMediaMode(models.TextChoices):
+    AUDIO = 'audio', 'Аудио'
+    VIDEO = 'video', 'Видео'
+
+
 class CallSession(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     chat = models.ForeignKey(Chat, on_delete=models.CASCADE, related_name='calls')
@@ -144,6 +149,11 @@ class CallSession(models.Model):
         max_length=16,
         choices=CallStatus.choices,
         default=CallStatus.RINGING,
+    )
+    media_mode = models.CharField(
+        max_length=8,
+        choices=CallMediaMode.choices,
+        default=CallMediaMode.AUDIO,
     )
     client_instance_id = models.UUIDField()
     accepted_client_instance_id = models.UUIDField(null=True, blank=True)

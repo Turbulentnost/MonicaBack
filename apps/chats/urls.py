@@ -14,6 +14,7 @@ from apps.chats.views import (
 from apps.chats.views_call import (
     AcceptCallView,
     ActiveCallView,
+    CallMediaModeView,
     CancelCallView,
     HangupCallView,
     IceConfigView,
@@ -47,6 +48,7 @@ urlpatterns = [
     path('calls/<uuid:call_id>/reject/', RejectCallView.as_view()),
     path('calls/<uuid:call_id>/cancel/', CancelCallView.as_view()),
     path('calls/<uuid:call_id>/hangup/', HangupCallView.as_view()),
+    path('calls/<uuid:call_id>/media-mode/', CallMediaModeView.as_view()),
     path('calls/active/', ActiveCallView.as_view()),
     path('calls/ice-config/', IceConfigView.as_view()),
     path('users/search/', UserSearchView.as_view()),

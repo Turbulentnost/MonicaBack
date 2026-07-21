@@ -10,7 +10,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.chats.models import CallSession, CallStatus, Chat
+from apps.chats.models import CallMediaMode, CallSession, CallStatus, Chat
 from apps.chats.presence import is_user_online
 from apps.notifications.services import user_channel_group
 
@@ -75,7 +75,7 @@ def broadcast_call_signal(call, action, from_user_id=None, data=None):
         payload['from_user_id'] = str(from_user_id)
     if data is not None:
         payload['data'] = data
-    if action == 'call.connected':
+    if action in ('call.connected', 'call.media_mode'):
         payload['call'] = serialize_call(call)
     _send_group(call_group(call.id), {'type': 'call.signal', 'data': payload})
 
@@ -123,7 +123,10 @@ def _schedule_expiry(call_id):
         logger.exception('Could not schedule expiry for call %s', call_id)
 
 
-def start_call(chat_id, caller, client_instance_id):
+def start_call(chat_id, caller, client_instance_id, media_mode=CallMediaMode.AUDIO):
+    if media_mode not in CallMediaMode.values:
+        media_mode = CallMediaMode.AUDIO
+
     existing = (
         CallSession.objects.select_related('chat', 'caller', 'callee')
         .filter(
@@ -176,6 +179,7 @@ def start_call(chat_id, caller, client_instance_id):
                 caller=caller,
                 callee=callee,
                 client_instance_id=client_instance_id,
+                media_mode=media_mode,
             )
     except IntegrityError:
         release_busy_locks(
@@ -311,6 +315,30 @@ def mark_call_connected(call_id, user):
     if changed:
         broadcast_call_signal(call, 'call.connected', user.id)
     return call, changed
+
+
+def set_call_media_mode(call_id, user, media_mode):
+    if media_mode not in CallMediaMode.values:
+        raise CallError('invalid_media_mode', 'Некорректный режим медиа', 400)
+    if media_mode != CallMediaMode.VIDEO:
+        raise CallError(
+            'invalid_media_mode',
+            'Поддерживается только переход audio → video',
+            400,
+        )
+
+    with transaction.atomic():
+        call = get_call_for_user(call_id, user, lock=True)
+        if call.status not in NONTERMINAL_STATUSES:
+            _invalid_state(call, f'{CallStatus.RINGING}|{CallStatus.ACTIVE}')
+        if call.media_mode == CallMediaMode.VIDEO:
+            return call, False
+        call.media_mode = CallMediaMode.VIDEO
+        call.save(update_fields=['media_mode'])
+
+    broadcast_user_event(call, 'call.media_mode')
+    broadcast_call_signal(call, 'call.media_mode', user.id, {'media_mode': call.media_mode})
+    return call, True
 
 
 def expire_ringing_call(call_id):

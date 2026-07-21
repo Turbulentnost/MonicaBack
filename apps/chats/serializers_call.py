@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from apps.chats.models import CallSession
+from apps.chats.models import CallMediaMode, CallSession
 from apps.users.serializers import UserSerializer
 
 
@@ -16,6 +16,7 @@ class CallSessionSerializer(serializers.ModelSerializer):
             'caller',
             'callee',
             'status',
+            'media_mode',
             'client_instance_id',
             'accepted_client_instance_id',
             'created_at',
@@ -30,6 +31,11 @@ class CallSessionSerializer(serializers.ModelSerializer):
 
 class StartCallSerializer(serializers.Serializer):
     client_instance_id = serializers.UUIDField()
+    media_mode = serializers.ChoiceField(
+        choices=CallMediaMode.choices,
+        required=False,
+        default=CallMediaMode.AUDIO,
+    )
 
 
 class AcceptCallSerializer(serializers.Serializer):
@@ -42,3 +48,7 @@ class EndCallSerializer(serializers.Serializer):
         allow_blank=True,
         max_length=64,
     )
+
+
+class MediaModeSerializer(serializers.Serializer):
+    media_mode = serializers.ChoiceField(choices=CallMediaMode.choices)
