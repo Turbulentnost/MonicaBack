@@ -11,6 +11,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.users.serializers import (
+    AccountUpdateSerializer,
     EmailSerializer,
     LoginSerializer,
     ProfileSerializer,
@@ -21,7 +22,7 @@ from apps.users.serializers import (
     send_verification_code,
     update_registration_session,
 )
-from apps.users.services.minio_service import download_object_bytes, upload_file
+from apps.users.services.minio_service import delete_object, download_object_bytes, upload_file
 
 User = get_user_model()
 
@@ -148,6 +149,58 @@ class MeView(APIView):
 
     def get(self, request):
         return Response(UserSerializer(request.user, context={'request': request}).data)
+
+    def patch(self, request):
+        serializer = AccountUpdateSerializer(
+            request.user,
+            data=request.data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        return Response(UserSerializer(user, context={'request': request}).data)
+
+
+class MeAvatarView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        photo = request.FILES.get('photo')
+        if not photo:
+            return Response({'photo': 'Файл обязателен'}, status=400)
+
+        allowed_types = {'image/jpeg', 'image/png', 'image/webp', 'image/gif'}
+        content_type = (photo.content_type or '').lower()
+        if content_type not in allowed_types:
+            return Response(
+                {'photo': 'Поддерживаются JPG, PNG, WEBP и GIF'},
+                status=400,
+            )
+        max_size_mb = 10
+        max_size = max_size_mb * 1024 * 1024
+        if photo.size > max_size:
+            return Response(
+                {'photo': f'Файл больше {max_size_mb} МБ'},
+                status=400,
+            )
+
+        ext = photo.name.rsplit('.', 1)[-1].lower() if '.' in photo.name else 'jpg'
+        object_name = f'{request.user.id}/{uuid.uuid4().hex}.{ext}'
+        path = upload_file(
+            settings.MINIO_BUCKET_AVATARS,
+            object_name,
+            photo,
+            content_type,
+        )
+        old_photo = request.user.photo
+        request.user.photo = path
+        request.user.save(update_fields=['photo', 'updated_at'])
+        if old_photo and old_photo != path:
+            delete_object(old_photo)
+
+        return Response(
+            UserSerializer(request.user, context={'request': request}).data
+        )
 
 
 class UserAvatarView(APIView):

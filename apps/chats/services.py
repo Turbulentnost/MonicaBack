@@ -5,12 +5,55 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.utils import timezone
 
 from apps.chats.models import Chat, ChatParticipant, Message, MessageHidden, MessageType
 from apps.users.services.minio_service import delete_object, get_presigned_url, upload_file
 
 User = get_user_model()
+
+MESSAGE_EDIT_MAX_DAYS = 7
+
+
+def get_chat_history_cache_version(chat_id) -> int:
+    return int(cache.get(f'chat-history-version:{chat_id}') or 1)
+
+
+def invalidate_chat_history_cache(chat_id):
+    key = f'chat-history-version:{chat_id}'
+    cache.set(key, get_chat_history_cache_version(chat_id) + 1, timeout=None)
+
+
+def looks_like_storage_path(value: str) -> bool:
+    """True for MinIO object keys like chat-files/... (not a text caption)."""
+    if not value or not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not text or ' ' in text or '\n' in text or '\t' in text:
+        return False
+    return text.startswith('chat-files/') or text.startswith('user-avatars/')
+
+
+def get_photo_caption(message) -> str:
+    if getattr(message, 'message_type', None) != MessageType.PHOTO:
+        return ''
+    content = (message.content or '').strip()
+    if not content:
+        return ''
+    paths = set()
+    if isinstance(message.attachments, list):
+        for item in message.attachments:
+            if isinstance(item, dict):
+                path = (item.get('path') or '').strip()
+                if path:
+                    paths.add(path)
+    if content in paths:
+        return ''
+    if looks_like_storage_path(content):
+        return ''
+    return content
+
 
 ALLOWED_IMAGE_TYPES = {
     'image/jpeg', 'image/png', 'image/gif', 'image/webp',
@@ -249,6 +292,7 @@ def mark_messages_read(chat, user, message_ids=None):
 
     now = timezone.now()
     Message.objects.filter(id__in=ids).update(read_at=now)
+    invalidate_chat_history_cache(chat.id)
     return ids
 
 
@@ -258,6 +302,7 @@ def delete_message_for_user(message, user, scope):
 
     if scope == 'me':
         MessageHidden.objects.get_or_create(user=user, message=message)
+        invalidate_chat_history_cache(message.chat_id)
         return 'me'
 
     if scope != 'everyone':
@@ -266,13 +311,25 @@ def delete_message_for_user(message, user, scope):
     if not can_delete_for_everyone(message, user):
         raise PermissionError('Нельзя удалить у всех')
 
-    if message.message_type in (
-        MessageType.PHOTO, MessageType.FILE, MessageType.VOICE
-    ) and message.content:
-        delete_object(message.content)
+    paths = set()
+    if (
+        message.message_type in (MessageType.PHOTO, MessageType.FILE, MessageType.VOICE)
+        and message.content
+        and looks_like_storage_path(message.content)
+    ):
+        paths.add(message.content)
+    if isinstance(message.attachments, list):
+        for item in message.attachments:
+            if isinstance(item, dict):
+                path = (item.get('path') or '').strip()
+                if path:
+                    paths.add(path)
+    for path in paths:
+        delete_object(path)
 
     message.deleted_at = timezone.now()
     message.deleted_by = user
     message.save(update_fields=['deleted_at', 'deleted_by'])
+    invalidate_chat_history_cache(message.chat_id)
     broadcast_message_deleted(message.chat_id, message.id)
     return 'everyone'

@@ -8,10 +8,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.chats.code_runner import run_javascript_source, run_python_source
-from apps.chats.models import Chat, Message
+from apps.chats.models import Chat, Message, MessageType
 from apps.chats.serializers import MessageSerializer
 from apps.chats.services import (
     delete_message_for_user,
+    get_chat_history_cache_version,
     get_chat_partner,
     get_last_visible_message,
     get_or_create_direct_chat,
@@ -78,15 +79,24 @@ class ChatMessagesView(APIView):
         except Chat.DoesNotExist:
             return Response({'detail': 'Чат не найден'}, status=404)
 
-        # Последние N сообщений (хронологически), а не первые N с начала истории.
-        qs = get_visible_messages(chat, request.user).order_by('-sent_at')
         try:
-            page_size = int(request.query_params.get('limit', 50))
+            page_size = int(request.query_params.get('limit', 100))
         except (TypeError, ValueError):
-            page_size = 50
+            page_size = 100
         page_size = max(1, min(page_size, 200))
 
         before_id = request.query_params.get('before')
+        version = get_chat_history_cache_version(chat.id)
+        cache_key = (
+            f'chat-history:{chat.id}:{request.user.id}:{version}:'
+            f'{before_id or "latest"}:{page_size}'
+        )
+        cached_page = cache.get(cache_key)
+        if cached_page is not None:
+            return Response(cached_page)
+
+        # Последние N сообщений (хронологически), а не первые N с начала истории.
+        qs = get_visible_messages(chat, request.user).order_by('-sent_at')
         if before_id:
             pivot = (
                 get_visible_messages(chat, request.user)
@@ -99,8 +109,29 @@ class ChatMessagesView(APIView):
 
         page = list(qs[:page_size])
         page.reverse()
-        return Response(
+        payload = list(
             MessageSerializer(page, many=True, context={'request': request}).data
+        )
+        cache.set(cache_key, payload, settings.CHAT_HISTORY_CACHE_TTL)
+        return Response(payload)
+
+
+class ChatFilesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, chat_id):
+        try:
+            chat = get_user_chats(request.user).get(id=chat_id)
+        except Chat.DoesNotExist:
+            return Response({'detail': 'Чат не найден'}, status=404)
+
+        messages = (
+            get_visible_messages(chat, request.user)
+            .filter(message_type__in=[MessageType.FILE, MessageType.PHOTO])
+            .order_by('-sent_at')
+        )
+        return Response(
+            MessageSerializer(messages, many=True, context={'request': request}).data
         )
 
 

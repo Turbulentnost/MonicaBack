@@ -176,6 +176,8 @@ REGISTRATION_SESSION_TTL = 300
 
 # Кэш результатов поиска пользователей (секунды)
 USER_SEARCH_CACHE_TTL = int(os.getenv('USER_SEARCH_CACHE_TTL', '90'))
+# Страницы истории сообщений в Redis; при изменении чата версия кэша обновляется.
+CHAT_HISTORY_CACHE_TTL = int(os.getenv('CHAT_HISTORY_CACHE_TTL', '300'))
 # Кэш presigned URL аватаров (секунды), меньше TTL MinIO (24ч)
 PHOTO_URL_CACHE_TTL = int(os.getenv('PHOTO_URL_CACHE_TTL', str(23 * 3600)))
 

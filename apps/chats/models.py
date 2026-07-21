@@ -47,11 +47,14 @@ class Message(models.Model):
     mime_type = models.CharField(max_length=128, blank=True, default='')
     file_size = models.PositiveIntegerField(null=True, blank=True)
     waveform = models.JSONField(default=list, blank=True)
+    # Gallery items: [{path, file_name, mime_type, file_size}, ...]
+    attachments = models.JSONField(default=list, blank=True)
     voice_duration_ms = models.PositiveIntegerField(null=True, blank=True)
     forwarded_from = models.ForeignKey(
         'self', null=True, blank=True, on_delete=models.SET_NULL, related_name='forwards'
     )
     sent_at = models.DateTimeField(auto_now_add=True)
+    edited_at = models.DateTimeField(null=True, blank=True)
     read_at = models.DateTimeField(null=True, blank=True)
     deleted_at = models.DateTimeField(null=True, blank=True)
     deleted_by = models.ForeignKey(

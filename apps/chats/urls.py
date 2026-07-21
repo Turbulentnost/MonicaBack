@@ -2,6 +2,7 @@ from django.urls import path
 
 from apps.chats.views import (
     ChatListView,
+    ChatFilesView,
     ChatMessageDeleteView,
     ChatMessageRunView,
     ChatMessagesView,
@@ -22,6 +23,7 @@ from apps.users.views import UserAvatarView
 urlpatterns = [
     path('chats/', ChatListView.as_view()),
     path('chats/start/', StartChatView.as_view()),
+    path('chats/<uuid:chat_id>/files/', ChatFilesView.as_view()),
     path('chats/<uuid:chat_id>/messages/', ChatMessagesView.as_view()),
     path('chats/<uuid:chat_id>/messages/upload/', ChatMessageUploadView.as_view()),
     path('chats/<uuid:chat_id>/messages/<uuid:message_id>/run/', ChatMessageRunView.as_view()),

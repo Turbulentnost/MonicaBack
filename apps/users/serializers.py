@@ -89,6 +89,32 @@ class UserSerializer(serializers.ModelSerializer):
         return is_user_online(obj.id)
 
 
+class AccountUpdateSerializer(serializers.ModelSerializer):
+    first_name = serializers.CharField(max_length=150)
+    last_name = serializers.CharField(max_length=150)
+    city = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    birth_date = serializers.DateField(required=False, allow_null=True)
+
+    class Meta:
+        model = User
+        fields = ['first_name', 'last_name', 'city', 'birth_date']
+
+    def validate_first_name(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError('Укажите имя')
+        return value
+
+    def validate_last_name(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError('Укажите фамилию')
+        return value
+
+    def validate_city(self, value):
+        return value.strip()
+
+
 def _email_code_key(email):
     return f'email_code:{email.lower()}'
 
