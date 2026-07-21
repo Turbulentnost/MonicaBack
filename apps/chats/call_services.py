@@ -211,6 +211,11 @@ def start_call(chat_id, caller, client_instance_id, media_mode=CallMediaMode.AUD
     _schedule_expiry(call.id)
     broadcast_user_event(call, 'call.ringing', [call.caller_id])
     broadcast_user_event(call, 'call.incoming', [call.callee_id])
+    try:
+        from apps.notifications.tasks import send_call_push
+        send_call_push.delay(str(call.id))
+    except Exception:
+        logger.exception('Failed to enqueue call push for %s', call.id)
     return call, True
 
 

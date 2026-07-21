@@ -32,8 +32,12 @@ def _get_firebase_app():
     return _firebase_app
 
 
-def send_fcm_to_tokens(*, tokens, title, body, data=None):
-    """Отправка multicast FCM. Без токенов — no-op."""
+def send_fcm_to_tokens(*, tokens, title, body, data=None, channel_id='messages_monica', data_only=False):
+    """Отправка multicast FCM. Без токенов — no-op.
+
+    data_only=True — только data (для входящих звонков, чтобы onMessageReceived
+    всегда отработал и показал full-screen notification на Android).
+    """
     if not tokens:
         return {'sent': 0, 'failed': 0}
 
@@ -41,13 +45,34 @@ def send_fcm_to_tokens(*, tokens, title, body, data=None):
     from firebase_admin import messaging
 
     data = {str(k): str(v) for k, v in (data or {}).items()}
+    if title and 'title' not in data:
+        data['title'] = str(title)
+    if body and 'body' not in data:
+        data['body'] = str(body)
+
+    android_notification = None
+    notification = None
+    if not data_only:
+        notification = messaging.Notification(title=title, body=body)
+        # icon/color применяются, когда Android сам рисует notification-payload
+        # (приложение в фоне). Имя icon = drawable без расширения.
+        android_notification = messaging.AndroidNotification(
+            channel_id=channel_id,
+            icon='ic_stat_monica',
+            color='#5B7FFF',
+            default_vibrate_timings=True,
+            default_light_settings=True,
+            priority='high',
+            visibility='private',
+        )
+
     message = messaging.MulticastMessage(
-        notification=messaging.Notification(title=title, body=body),
+        notification=notification,
         data=data,
         tokens=list(tokens),
         android=messaging.AndroidConfig(
             priority='high',
-            notification=messaging.AndroidNotification(channel_id='messages'),
+            notification=android_notification,
         ),
     )
     response = messaging.send_each_for_multicast(message)

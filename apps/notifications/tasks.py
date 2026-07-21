@@ -75,6 +75,61 @@ def send_message_push(self, message_id: str, recipient_id: str):
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=30)
+def send_call_push(self, call_id: str):
+    """FCM data-push о входящем звонке — открывает мобильное приложение."""
+    from apps.chats.models import CallSession, CallStatus
+    from apps.notifications.models import DeviceToken
+    from apps.notifications.fcm import send_fcm_to_tokens
+
+    try:
+        call = CallSession.objects.select_related('caller', 'callee', 'chat').get(id=call_id)
+    except CallSession.DoesNotExist:
+        logger.warning('Call %s not found for push', call_id)
+        return {'ok': False, 'reason': 'call_not_found'}
+
+    if call.status != CallStatus.RINGING:
+        return {'ok': True, 'sent': 0, 'reason': 'not_ringing'}
+
+    tokens = list(
+        DeviceToken.objects.filter(
+            user_id=call.callee_id,
+            is_active=True,
+        ).values_list('token', flat=True)
+    )
+    if not tokens:
+        logger.info('No device tokens for callee %s — call push skipped', call.callee_id)
+        return {'ok': True, 'sent': 0, 'reason': 'no_tokens'}
+
+    is_video = call.media_mode == 'video'
+    title = 'Входящий видеозвонок' if is_video else 'Входящий аудиозвонок'
+    body = f'@{call.caller.nickname}'
+
+    try:
+        result = send_fcm_to_tokens(
+            tokens=tokens,
+            title=title,
+            body=body,
+            data={
+                'type': 'incoming_call',
+                'call_id': str(call.id),
+                'chat_id': str(call.chat_id),
+                'media_mode': call.media_mode,
+                'caller_id': str(call.caller_id),
+                'caller_nickname': call.caller.nickname or '',
+                'title': title,
+                'body': body,
+            },
+            channel_id='calls_monica_v2',
+            data_only=True,
+        )
+    except Exception as exc:
+        logger.exception('FCM call push failed')
+        raise self.retry(exc=exc)
+
+    return {'ok': True, **result}
+
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=30)
 def send_notification_push(self, notification_id: str):
     """FCM-пуш для in-app уведомления (приватный чат и др.)."""
     from apps.notifications.models import DeviceToken, Notification
