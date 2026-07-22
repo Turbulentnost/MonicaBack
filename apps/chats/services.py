@@ -97,7 +97,7 @@ def get_visible_messages(chat, user):
         chat.messages
         .filter(deleted_at__isnull=True)
         .exclude(hidden_for__user=user)
-        .select_related('sender')
+        .select_related('sender', 'reply_to__sender')
     )
 
 
@@ -313,6 +313,18 @@ def delete_message_for_user(message, user, scope):
                 path = (item.get('path') or '').strip()
                 if path:
                     paths.add(path)
+    if message.message_type == MessageType.FORWARD and isinstance(message.forward_bundle, list):
+        for forwarded in message.forward_bundle:
+            if not isinstance(forwarded, dict):
+                continue
+            content = (forwarded.get('content') or '').strip()
+            if looks_like_storage_path(content):
+                paths.add(content)
+            for item in forwarded.get('attachments') or []:
+                if isinstance(item, dict):
+                    path = (item.get('path') or '').strip()
+                    if path:
+                        paths.add(path)
     for path in paths:
         delete_object(path)
 

@@ -60,6 +60,8 @@ def send_message_push(self, message_id: str, recipient_id: str):
         if message.message_type == 'text'
         else 'Голосовое сообщение'
         if message.message_type == 'voice'
+        else (message.content[:120] or 'Пересланные сообщения')
+        if message.message_type == 'forward'
         else f'[{message.message_type}]'
     )
 

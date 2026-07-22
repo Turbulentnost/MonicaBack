@@ -10,7 +10,11 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.chats.models import Chat, Message, MessageHidden, MessageType
-from apps.chats.services import invalidate_chat_history_cache, looks_like_storage_path
+from apps.chats.services import (
+    get_photo_caption,
+    invalidate_chat_history_cache,
+    looks_like_storage_path,
+)
 from apps.notifications.services import user_channel_group
 from apps.users.services.minio_service import (
     delete_object,
@@ -19,7 +23,6 @@ from apps.users.services.minio_service import (
 )
 
 MAX_FORWARD_MESSAGES = 50
-FORWARD_PLACEHOLDER = 'Пересланное сообщение'
 
 
 class ForwardError(Exception):
@@ -83,15 +86,17 @@ def _snapshot_message(message, target_chat, copied_paths):
 
     return {
         'original_id': str(message.id),
-        'chat_id': str(message.chat_id),
+        'original_chat_id': str(message.chat_id),
         'sender': {
             'id': str(message.sender_id),
             'nickname': message.sender.nickname,
             'first_name': message.sender.first_name,
             'last_name': message.sender.last_name,
+            'photo': message.sender.photo or '',
         },
         'message_type': message.message_type,
         'content': content,
+        'caption': get_photo_caption(message),
         'file_name': message.file_name or '',
         'mime_type': message.mime_type or '',
         'file_size': message.file_size,
@@ -171,7 +176,7 @@ def forward_messages(*, target_chat_id, source_chat_id, message_ids, user, comme
 
     source_messages = _load_forward_messages(source_chat, user, message_ids)
     copied_paths = {}
-    created_message = None
+    committed = False
     try:
         bundle = [
             _snapshot_message(message, target_chat, copied_paths)
@@ -182,15 +187,16 @@ def forward_messages(*, target_chat_id, source_chat_id, message_ids, user, comme
                 chat=target_chat,
                 sender=user,
                 message_type=MessageType.FORWARD,
-                content=(comment or '').strip() or FORWARD_PLACEHOLDER,
+                content=(comment or '').strip(),
                 forward_bundle=bundle,
                 forwarded_from=source_messages[0],
             )
             target_chat.updated_at = timezone.now()
             target_chat.save(update_fields=['updated_at'])
             invalidate_chat_history_cache(target_chat.id)
+        committed = True
     except Exception:
-        if created_message is None:
+        if not committed:
             for copied_path in copied_paths.values():
                 delete_object(copied_path)
         raise

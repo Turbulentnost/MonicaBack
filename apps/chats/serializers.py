@@ -82,6 +82,12 @@ class MessageSerializer(serializers.ModelSerializer):
         for item in result:
             if not isinstance(item, dict):
                 continue
+            if not item.get('original_chat_id') and item.get('chat_id'):
+                item['original_chat_id'] = item['chat_id']
+            sender = item.get('sender')
+            if isinstance(sender, dict):
+                photo = (sender.get('photo') or '').strip()
+                sender['photo_url'] = get_presigned_url(photo) if photo else None
             content = (item.get('content') or '').strip()
             item['content_url'] = (
                 get_presigned_url(content) if looks_like_storage_path(content) else None
@@ -109,7 +115,12 @@ class MessageSerializer(serializers.ModelSerializer):
         return {
             'id': str(reply.id),
             'chat': str(reply.chat_id),
-            'sender_nickname': reply.sender.nickname,
+            'sender': {
+                'id': str(reply.sender_id),
+                'nickname': reply.sender.nickname,
+                'first_name': reply.sender.first_name,
+                'last_name': reply.sender.last_name,
+            },
             'preview': preview[:160],
             'message_type': reply.message_type,
         }
