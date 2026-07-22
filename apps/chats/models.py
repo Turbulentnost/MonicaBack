@@ -11,6 +11,7 @@ class MessageType(models.TextChoices):
     VOICE = 'voice', 'Голосовое сообщение'
     CODE = 'code', 'Код'
     FORWARD = 'forward', 'Пересылка'
+    CALL = 'call', 'Звонок'
 
 
 class Chat(models.Model):
@@ -50,8 +51,12 @@ class Message(models.Model):
     # Gallery items: [{path, file_name, mime_type, file_size}, ...]
     attachments = models.JSONField(default=list, blank=True)
     voice_duration_ms = models.PositiveIntegerField(null=True, blank=True)
+    forward_bundle = models.JSONField(default=list, blank=True)
     forwarded_from = models.ForeignKey(
         'self', null=True, blank=True, on_delete=models.SET_NULL, related_name='forwards'
+    )
+    reply_to = models.ForeignKey(
+        'self', null=True, blank=True, on_delete=models.SET_NULL, related_name='replies'
     )
     sent_at = models.DateTimeField(auto_now_add=True)
     edited_at = models.DateTimeField(null=True, blank=True)

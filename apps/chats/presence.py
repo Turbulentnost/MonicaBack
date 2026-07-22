@@ -4,10 +4,13 @@ from django.utils import timezone
 CONN_KEY = 'presence:conn:{user_id}'
 ALIVE_KEY = 'presence:alive:{user_id}'
 ONLINE_SET_KEY = 'presence:online_ids'
+ACTIVE_CHAT_CONN_KEY = 'presence:active_chat_conn:{user_id}:{chat_id}'
 
 # Пока WS жив, клиент шлёт ping ~каждые 20с. Если пингов нет — считаем offline.
 ALIVE_TTL_SEC = 90
 CONN_TTL_SEC = 90
+# Chat WS may stay open without a dedicated ping; refresh on activity.
+ACTIVE_CHAT_TTL_SEC = 180
 
 
 def _conn_key(user_id):
@@ -131,6 +134,48 @@ def heartbeat(user_id):
     return 'ok'
 
 
+def _active_chat_conn_key(user_id, chat_id):
+    return ACTIVE_CHAT_CONN_KEY.format(user_id=user_id, chat_id=chat_id)
+
+
+def mark_chat_viewing(user_id, chat_id):
+    """User opened chat WS (possibly multiple tabs)."""
+    uid = str(user_id)
+    cid = str(chat_id)
+    key = _active_chat_conn_key(uid, cid)
+    count = (cache.get(key) or 0) + 1
+    cache.set(key, count, timeout=ACTIVE_CHAT_TTL_SEC)
+
+
+def unmark_chat_viewing(user_id, chat_id):
+    """User closed a chat WS tab/connection."""
+    uid = str(user_id)
+    cid = str(chat_id)
+    key = _active_chat_conn_key(uid, cid)
+    count = (cache.get(key) or 0) - 1
+    if count <= 0:
+        cache.delete(key)
+        return
+    cache.set(key, count, timeout=ACTIVE_CHAT_TTL_SEC)
+
+
+def touch_chat_viewing(user_id, chat_id):
+    """Refresh TTL while the chat page is still open and active."""
+    uid = str(user_id)
+    cid = str(chat_id)
+    key = _active_chat_conn_key(uid, cid)
+    count = cache.get(key) or 0
+    if count <= 0:
+        return False
+    cache.set(key, count, timeout=ACTIVE_CHAT_TTL_SEC)
+    return True
+
+
+def is_user_viewing_chat(user_id, chat_id):
+    """True if recipient currently has this chat open over WebSocket."""
+    return bool(cache.get(_active_chat_conn_key(str(user_id), str(chat_id))))
+
+
 def clear_all_presence(record_seen=False):
     """Сброс всех presence-ключей (после рестарта Daphne / ручная чистка)."""
     ids = [str(uid) for uid in (cache.get(ONLINE_SET_KEY) or [])]
@@ -145,7 +190,11 @@ def clear_all_presence(record_seen=False):
     cache.delete(ONLINE_SET_KEY)
     try:
         client = cache.client.get_client(write=True)
-        for pattern in (b'presence:conn:*', b'presence:alive:*'):
+        for pattern in (
+            b'presence:conn:*',
+            b'presence:alive:*',
+            b'presence:active_chat_conn:*',
+        ):
             for key in client.scan_iter(match=pattern, count=100):
                 client.delete(key)
     except Exception:

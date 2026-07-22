@@ -4,6 +4,7 @@ from django.contrib.auth.models import AnonymousUser
 from django.utils import timezone
 
 from apps.chats.models import Chat, Message, MessageType
+from apps.chats.presence import mark_chat_viewing, touch_chat_viewing, unmark_chat_viewing
 from apps.chats.services import (
     MESSAGE_EDIT_MAX_DAYS,
     get_photo_caption,
@@ -33,15 +34,20 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         self.room_group_name = f'chat_{self.chat_id}'
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
+        await database_sync_to_async(mark_chat_viewing)(self.user.id, self.chat_id)
         # Read receipts are client-driven (messages.read) so idle open tabs
         # do not auto-mark incoming messages as read.
 
     async def disconnect(self, close_code):
+        if hasattr(self, 'user') and hasattr(self, 'chat_id'):
+            await database_sync_to_async(unmark_chat_viewing)(self.user.id, self.chat_id)
         if hasattr(self, 'room_group_name'):
             await self._broadcast_typing(False)
             await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
 
     async def receive_json(self, content, **kwargs):
+        if hasattr(self, 'user') and hasattr(self, 'chat_id'):
+            await database_sync_to_async(touch_chat_viewing)(self.user.id, self.chat_id)
         action = content.get('action')
         if action == 'message.send':
             await self._handle_send_message(content)
@@ -78,6 +84,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         file_name = (content.get('file_name') or '').strip()
         mime_type = (content.get('mime_type') or '').strip()
         file_size = content.get('file_size')
+        reply_to_id = content.get('reply_to')
 
         if attachments:
             first = attachments[0]
@@ -116,6 +123,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             waveform=waveform,
             voice_duration_ms=voice_duration_ms or None,
             attachments=attachments,
+            reply_to_id=reply_to_id,
         )
         if not message:
             return
@@ -161,22 +169,30 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             )
         return ids
 
+    async def _touch_viewing(self):
+        if hasattr(self, 'user') and hasattr(self, 'chat_id'):
+            await database_sync_to_async(touch_chat_viewing)(self.user.id, self.chat_id)
+
     async def chat_message(self, event):
+        await self._touch_viewing()
         await self.send_json({'action': 'message.new', 'message': event['message']})
 
     async def chat_message_deleted(self, event):
+        await self._touch_viewing()
         await self.send_json({
             'action': 'message.deleted',
             'message_id': event['message_id'],
         })
 
     async def chat_message_edited(self, event):
+        await self._touch_viewing()
         await self.send_json({
             'action': 'message.edited',
             'message': event['message'],
         })
 
     async def chat_messages_read(self, event):
+        await self._touch_viewing()
         await self.send_json({
             'action': 'messages.read',
             'message_ids': event['message_ids'],
@@ -187,6 +203,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
     async def chat_typing(self, event):
         if str(self.user.id) == str(event.get('user_id')):
             return
+        await self._touch_viewing()
         await self.send_json({
             'action': 'typing.update',
             'user_id': event['user_id'],
@@ -240,6 +257,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         waveform=None,
         voice_duration_ms=None,
         attachments=None,
+        reply_to_id=None,
     ):
         try:
             chat = Chat.objects.get(id=self.chat_id)
@@ -247,6 +265,22 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             return None
         if not user_in_chat(chat, self.user):
             return None
+
+        reply_to = None
+        if reply_to_id:
+            try:
+                reply_to = (
+                    Message.objects.filter(
+                        id=reply_to_id,
+                        chat=chat,
+                        deleted_at__isnull=True,
+                    )
+                    .exclude(hidden_for__user=self.user)
+                    .select_related('sender')
+                    .get()
+                )
+            except (Message.DoesNotExist, ValueError, TypeError):
+                return None
 
         message = Message.objects.create(
             chat=chat,
@@ -259,6 +293,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             waveform=waveform or [],
             voice_duration_ms=voice_duration_ms,
             attachments=attachments or [],
+            reply_to=reply_to,
         )
         invalidate_chat_history_cache(chat.id)
         chat.updated_at = timezone.now()

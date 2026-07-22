@@ -58,30 +58,6 @@ def get_photo_caption(message) -> str:
 ALLOWED_IMAGE_TYPES = {
     'image/jpeg', 'image/png', 'image/gif', 'image/webp',
 }
-ALLOWED_FILE_TYPES = ALLOWED_IMAGE_TYPES | {
-    'audio/mp4',
-    'audio/m4a',
-    'audio/x-m4a',
-    'audio/aac',
-    'audio/mpeg',
-    'audio/webm',
-    'audio/ogg',
-    'audio/opus',
-    'audio/ogg',
-    'audio/webm',
-    'application/ogg',
-    'application/pdf',
-    'application/msword',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'text/plain',
-    'text/x-python',
-    'application/x-python-code',
-    'text/javascript',
-    'application/javascript',
-    'application/x-javascript',
-    'text/js',
-    'application/octet-stream',  # браузеры часто так отдают .py/.js
-}
 
 
 def get_or_create_direct_chat(user_a, user_b):
@@ -154,25 +130,22 @@ def _extension_for_upload(filename, content_type):
         'application/javascript': '.js',
         'application/x-javascript': '.js',
         'text/js': '.js',
+        'application/vnd.android.package-archive': '.apk',
     }
     return mapping.get(content_type, '.bin')
 
 
 def upload_chat_file(chat, user, uploaded_file):
+    """Upload any file type; only size and attachment count are limited."""
     if not user_in_chat(chat, user):
         raise PermissionError('Нет доступа к чату')
 
-    content_type = uploaded_file.content_type or 'application/octet-stream'
+    content_type = (uploaded_file.content_type or '').strip() or 'application/octet-stream'
     ext = os.path.splitext(uploaded_file.name or '')[1].lower()
-    is_python = ext == '.py'
-    is_javascript = ext == '.js'
     image_exts = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
     audio_exts = {'.m4a', '.aac', '.mp3', '.ogg', '.opus', '.webm'}
-    known_exts = image_exts | audio_exts | {
-        '.py', '.js', '.pdf', '.doc', '.docx', '.txt'
-    }
 
-    # Браузер часто врёт MIME — доверяем расширению
+    # Normalize common MIME guesses when the browser sends octet-stream / empty.
     if ext in image_exts and content_type not in ALLOWED_IMAGE_TYPES:
         content_type = {
             '.jpg': 'image/jpeg',
@@ -181,17 +154,15 @@ def upload_chat_file(chat, user, uploaded_file):
             '.gif': 'image/gif',
             '.webp': 'image/webp',
         }.get(ext, 'image/jpeg')
-
-    if content_type not in ALLOWED_FILE_TYPES and not is_python and not is_javascript and ext not in known_exts:
-        raise ValueError(f'Неподдерживаемый тип файла: {uploaded_file.name}')
-
-    if content_type == 'application/octet-stream' and ext not in known_exts:
-        raise ValueError(f'Неподдерживаемый тип файла: {uploaded_file.name}')
-
-    if is_python:
+    elif ext == '.py':
         content_type = 'text/x-python'
-    elif is_javascript:
+    elif ext == '.js':
         content_type = 'text/javascript'
+    elif ext == '.apk' and content_type == 'application/octet-stream':
+        content_type = 'application/vnd.android.package-archive'
+    elif not content_type or content_type == 'application/octet-stream':
+        # Keep original name extension in storage; generic binary is fine.
+        content_type = 'application/octet-stream'
 
     is_image = content_type in ALLOWED_IMAGE_TYPES or ext in image_exts
     is_audio = content_type.startswith('audio/') or ext in audio_exts
@@ -273,7 +244,11 @@ def broadcast_messages_read(chat_id, message_ids, reader_id):
 
 
 def mark_messages_read(chat, user, message_ids=None):
-    """Отмечает чужие непрочитанные сообщения как прочитанные. Возвращает id."""
+    """
+    Отмечает чужие непрочитанные сообщения как прочитанные.
+    Если переданы конкретные id — также помечает все более ранние
+    непрочитанные в этом чате (просмотр позднего = просмотр предыдущих).
+    """
     if not user_in_chat(chat, user):
         raise PermissionError('Нет доступа к чату')
 
@@ -284,7 +259,18 @@ def mark_messages_read(chat, user, message_ids=None):
     ).exclude(sender=user)
 
     if message_ids:
-        qs = qs.filter(id__in=message_ids)
+        # Anchor on the newest of the requested messages; everything at/before
+        # that point from others is considered read as well.
+        latest_sent_at = (
+            Message.objects.filter(chat=chat, id__in=message_ids)
+            .exclude(sender=user)
+            .order_by('-sent_at')
+            .values_list('sent_at', flat=True)
+            .first()
+        )
+        if latest_sent_at is None:
+            return []
+        qs = qs.filter(sent_at__lte=latest_sent_at)
 
     ids = list(qs.values_list('id', flat=True))
     if not ids:
@@ -299,6 +285,9 @@ def mark_messages_read(chat, user, message_ids=None):
 def delete_message_for_user(message, user, scope):
     if not user_in_chat(message.chat, user):
         raise PermissionError('Нет доступа к чату')
+
+    if message.message_type == MessageType.CALL:
+        raise PermissionError('Сообщения о звонках нельзя удалять')
 
     if scope == 'me':
         MessageHidden.objects.get_or_create(user=user, message=message)

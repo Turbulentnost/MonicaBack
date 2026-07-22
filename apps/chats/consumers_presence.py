@@ -56,11 +56,10 @@ class PresenceConsumer(AsyncJsonWebsocketConsumer):
             user_channel_group(self.user_id), self.channel_name
         )
         if fully_offline:
-            # Пауза: при F5 / кратком reconnect не помечаем offline.
-            # Pending-инвайты НЕ отменяем здесь: на мобилке WS часто рвётся
-            # на 2–5 с (Doze / сеть), и автоdecline убивал приглашения до Accept.
-            # Отмена заявок — только через leave / explicit cancel / decline.
-            await asyncio.sleep(2.5)
+            # Пауза: при F5 / кратком reconnect / пересоздании mobile WS
+            # не помечаем offline. На мобилке при сворачивании UI сокет
+            # может моргнуть на несколько секунд, пока поднимается FGS-демон.
+            await asyncio.sleep(8)
             still_offline = not await database_sync_to_async(is_user_online)(self.user_id)
             if still_offline:
                 last_seen = await database_sync_to_async(record_last_seen)(self.user_id)

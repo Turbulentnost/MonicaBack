@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 from rest_framework import serializers
 
 from apps.chats.models import Message
@@ -11,13 +13,16 @@ class MessageSerializer(serializers.ModelSerializer):
     content_url = serializers.SerializerMethodField()
     attachments = serializers.SerializerMethodField()
     caption = serializers.SerializerMethodField()
+    forward_bundle = serializers.SerializerMethodField()
+    reply_to_summary = serializers.SerializerMethodField()
 
     class Meta:
         model = Message
         fields = [
             'id', 'chat', 'sender', 'message_type', 'content', 'content_url', 'caption',
             'file_name', 'mime_type', 'file_size', 'attachments',
-            'forwarded_from', 'sent_at', 'edited_at', 'read_at', 'waveform', 'voice_duration_ms',
+            'forwarded_from', 'forward_bundle', 'reply_to_summary',
+            'sent_at', 'edited_at', 'read_at', 'waveform', 'voice_duration_ms',
         ]
         read_only_fields = fields
 
@@ -71,6 +76,44 @@ class MessageSerializer(serializers.ModelSerializer):
                 })
         return items
 
+    def get_forward_bundle(self, obj):
+        bundle = obj.forward_bundle if isinstance(obj.forward_bundle, list) else []
+        result = deepcopy(bundle)
+        for item in result:
+            if not isinstance(item, dict):
+                continue
+            content = (item.get('content') or '').strip()
+            item['content_url'] = (
+                get_presigned_url(content) if looks_like_storage_path(content) else None
+            )
+            attachments = item.get('attachments')
+            if not isinstance(attachments, list):
+                item['attachments'] = []
+                continue
+            for attachment in attachments:
+                if not isinstance(attachment, dict):
+                    continue
+                path = (attachment.get('path') or '').strip()
+                attachment['content_url'] = get_presigned_url(path) if path else None
+        return result
+
+    def get_reply_to_summary(self, obj):
+        reply = obj.reply_to
+        if reply is None:
+            return None
+        preview = (reply.content or '').strip()
+        if reply.deleted_at:
+            preview = 'Сообщение удалено'
+        elif looks_like_storage_path(preview):
+            preview = reply.file_name or f'[{reply.message_type}]'
+        return {
+            'id': str(reply.id),
+            'chat': str(reply.chat_id),
+            'sender_nickname': reply.sender.nickname,
+            'preview': preview[:160],
+            'message_type': reply.message_type,
+        }
+
 
 class ChatListSerializer(serializers.Serializer):
     id = serializers.UUIDField()
@@ -85,3 +128,19 @@ class SendMessageSerializer(serializers.Serializer):
         choices=['text', 'photo', 'file', 'voice', 'code', 'forward']
     )
     content = serializers.CharField()
+
+
+class ForwardMessagesSerializer(serializers.Serializer):
+    source_chat_id = serializers.UUIDField()
+    message_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        min_length=1,
+        max_length=50,
+        allow_empty=False,
+    )
+    comment = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=4000,
+        trim_whitespace=True,
+    )

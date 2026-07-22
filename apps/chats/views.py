@@ -9,7 +9,7 @@ from rest_framework.views import APIView
 
 from apps.chats.code_runner import run_javascript_source, run_python_source
 from apps.chats.models import Chat, Message, MessageType
-from apps.chats.serializers import MessageSerializer
+from apps.chats.serializers import ForwardMessagesSerializer, MessageSerializer
 from apps.chats.services import (
     delete_message_for_user,
     get_chat_history_cache_version,
@@ -197,6 +197,32 @@ class ChatMessageUploadView(APIView):
             return Response({'detail': str(exc)}, status=400)
 
         return Response({'files': payload}, status=status.HTTP_201_CREATED)
+
+
+class ChatMessageForwardView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, chat_id):
+        serializer = ForwardMessagesSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        from apps.chats.forward_services import ForwardError, forward_messages
+
+        try:
+            message = forward_messages(
+                target_chat_id=chat_id,
+                source_chat_id=serializer.validated_data['source_chat_id'],
+                message_ids=serializer.validated_data['message_ids'],
+                comment=serializer.validated_data.get('comment', ''),
+                user=request.user,
+            )
+        except ForwardError as exc:
+            return Response({'detail': exc.detail}, status=exc.status_code)
+
+        return Response(
+            MessageSerializer(message, context={'request': request}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class ChatMessageDeleteView(APIView):

@@ -23,9 +23,10 @@ def expire_call(call_id: str):
 def send_message_push(self, message_id: str, recipient_id: str):
     """
     Фоновая отправка FCM-пуша о новом сообщении.
-    Пока логируем; полноценный FCM подключим после DeviceToken с мобилки.
+    Не шлём пуш, если получатель сейчас открыл этот чат (web/mobile WS).
     """
     from apps.chats.models import Message
+    from apps.chats.presence import is_user_viewing_chat
     from apps.notifications.models import DeviceToken
     from apps.notifications.fcm import send_fcm_to_tokens
 
@@ -34,6 +35,14 @@ def send_message_push(self, message_id: str, recipient_id: str):
     except Message.DoesNotExist:
         logger.warning('Message %s not found for push', message_id)
         return {'ok': False, 'reason': 'message_not_found'}
+
+    if is_user_viewing_chat(recipient_id, message.chat_id):
+        logger.info(
+            'Push skipped for user %s — chat %s is open',
+            recipient_id,
+            message.chat_id,
+        )
+        return {'ok': True, 'sent': 0, 'reason': 'chat_open'}
 
     tokens = list(
         DeviceToken.objects.filter(

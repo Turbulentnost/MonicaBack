@@ -10,7 +10,7 @@ from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from apps.chats.models import CallMediaMode, CallSession, CallStatus, Chat
+from apps.chats.models import CallMediaMode, CallSession, CallStatus, Chat, Message, MessageType
 from apps.chats.presence import is_user_online
 from apps.notifications.services import user_channel_group
 
@@ -88,6 +88,120 @@ def broadcast_call_ended(call, action):
             'data': {'action': action, 'call': serialize_call(call)},
         },
     )
+
+
+def _format_call_duration(duration_ms):
+    total_sec = max(0, int(duration_ms // 1000))
+    minutes, seconds = divmod(total_sec, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f'{hours}:{minutes:02d}:{seconds:02d}'
+    return f'{minutes}:{seconds:02d}'
+
+
+def build_call_history_content(call):
+    """Russian system text + optional duration for a finished call."""
+    is_video = call.media_mode == CallMediaMode.VIDEO
+    duration_ms = 0
+    if call.status == CallStatus.ENDED:
+        start = call.connected_at or call.accepted_at
+        if start and call.ended_at:
+            duration_ms = max(0, int((call.ended_at - start).total_seconds() * 1000))
+        label = 'Видеозвонок' if is_video else 'Звонок'
+        if duration_ms > 0:
+            return f'{label}, {_format_call_duration(duration_ms)}', duration_ms
+        return label, 0
+
+    mapping = {
+        CallStatus.MISSED: (
+            'Пропущенный видеозвонок' if is_video else 'Пропущенный звонок'
+        ),
+        CallStatus.REJECTED: (
+            'Отклонённый видеозвонок' if is_video else 'Отклонённый звонок'
+        ),
+        CallStatus.CANCELLED: (
+            'Отменённый видеозвонок' if is_video else 'Отменённый звонок'
+        ),
+        CallStatus.FAILED: (
+            'Неудачный видеозвонок' if is_video else 'Неудачный звонок'
+        ),
+    }
+    return mapping.get(
+        call.status,
+        'Видеозвонок' if is_video else 'Звонок',
+    ), 0
+
+
+def create_call_history_message(call):
+    """
+    Immutable chat system message for a finished call.
+    Idempotent by call id stored in file_name.
+    """
+    if call.status not in TERMINAL_STATUSES:
+        return None
+    if Message.objects.filter(
+        chat_id=call.chat_id,
+        message_type=MessageType.CALL,
+        file_name=str(call.id),
+    ).exists():
+        return None
+
+    content, duration_ms = build_call_history_content(call)
+    message = Message.objects.create(
+        chat_id=call.chat_id,
+        sender_id=call.caller_id,
+        message_type=MessageType.CALL,
+        content=content,
+        file_name=str(call.id),
+        mime_type=call.status,
+        voice_duration_ms=duration_ms or None,
+        attachments=[{
+            'call_id': str(call.id),
+            'status': call.status,
+            'media_mode': call.media_mode,
+            'duration_ms': duration_ms,
+        }],
+        # System notices are considered "seen" for both sides.
+        read_at=timezone.now(),
+    )
+    from apps.chats.services import invalidate_chat_history_cache
+
+    invalidate_chat_history_cache(call.chat_id)
+    Chat.objects.filter(id=call.chat_id).update(updated_at=timezone.now())
+    return message
+
+
+def broadcast_call_history_message(message):
+    if not message:
+        return
+    from apps.chats.serializers import MessageSerializer
+
+    payload = json.loads(json.dumps(MessageSerializer(message).data, default=str))
+    _send_group(
+        f'chat_{message.chat_id}',
+        {'type': 'chat.message', 'message': payload},
+    )
+    from apps.chats.models import ChatParticipant
+
+    participant_ids = ChatParticipant.objects.filter(
+        chat_id=message.chat_id,
+    ).values_list('user_id', flat=True)
+    for user_id in participant_ids:
+        _send_group(
+            user_channel_group(user_id),
+            {'type': 'chat.preview', 'message': payload},
+        )
+
+
+def _after_call_terminal(call, action):
+    release_busy_locks(call)
+    broadcast_user_event(call, action)
+    broadcast_call_ended(call, action)
+    try:
+        message = create_call_history_message(call)
+        broadcast_call_history_message(message)
+    except Exception:
+        logger.exception('Failed to create call history message for %s', call.id)
 
 
 def _release_lock(user_id, call_id):
@@ -284,9 +398,7 @@ def _finish_call(call_id, user, target_status, action, allowed_role, reason):
         call.ended_by = user
         call.end_reason = reason
         call.save(update_fields=['status', 'ended_at', 'ended_by', 'end_reason'])
-    release_busy_locks(call)
-    broadcast_user_event(call, action)
-    broadcast_call_ended(call, action)
+    _after_call_terminal(call, action)
     return call, True
 
 
@@ -362,7 +474,5 @@ def expire_ringing_call(call_id):
         call.ended_at = timezone.now()
         call.end_reason = 'ring_timeout'
         call.save(update_fields=['status', 'ended_at', 'end_reason'])
-    release_busy_locks(call)
-    broadcast_user_event(call, 'call.missed')
-    broadcast_call_ended(call, 'call.missed')
+    _after_call_terminal(call, 'call.missed')
     return call, True

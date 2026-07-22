@@ -13,13 +13,24 @@ from apps.chats.call_services import (
     CallError,
     accept_call,
     busy_key,
+    create_call_history_message,
     expire_ringing_call,
     hangup_call,
+    reject_call,
     set_call_media_mode,
     start_call,
 )
 from apps.chats.consumers_call import CallSignalingConsumer
-from apps.chats.models import CallMediaMode, CallSession, CallStatus, Chat, ChatParticipant
+from apps.chats.models import (
+    CallMediaMode,
+    CallSession,
+    CallStatus,
+    Chat,
+    ChatParticipant,
+    Message,
+    MessageType,
+)
+from apps.chats.services import delete_message_for_user
 from apps.users.models import User
 
 
@@ -194,6 +205,77 @@ class CallServiceAndEndpointTests(TransactionTestCase):
         )
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.data['media_mode'], CallMediaMode.VIDEO)
+
+    @patch('apps.chats.call_services.broadcast_call_history_message')
+    @patch('apps.chats.call_services.broadcast_call_ended')
+    @patch('apps.chats.call_services.broadcast_user_event')
+    @patch('apps.chats.call_services._schedule_expiry')
+    @patch('apps.chats.call_services.is_user_online', return_value=True)
+    def test_call_creates_undeletable_history_message(
+        self, _online, _schedule, _broadcast, _ended, _history_broadcast
+    ):
+        call, _ = start_call(self.chat.id, self.caller, uuid.uuid4())
+        accept_call(call.id, self.callee, uuid.uuid4())
+        hangup_call(call.id, self.caller)
+
+        messages = list(
+            Message.objects.filter(
+                chat_id=self.chat.id,
+                message_type=MessageType.CALL,
+            )
+        )
+        self.assertEqual(len(messages), 1)
+        history = messages[0]
+        self.assertEqual(history.file_name, str(call.id))
+        self.assertEqual(history.mime_type, CallStatus.ENDED)
+        self.assertIn('Звонок', history.content)
+        self.assertEqual(history.sender_id, self.caller.id)
+
+        with self.assertRaises(PermissionError):
+            delete_message_for_user(history, self.caller, 'everyone')
+        with self.assertRaises(PermissionError):
+            delete_message_for_user(history, self.callee, 'me')
+
+        # Idempotent: finishing again must not duplicate.
+        self.assertIsNone(create_call_history_message(call))
+        self.assertEqual(
+            Message.objects.filter(
+                chat_id=self.chat.id,
+                message_type=MessageType.CALL,
+            ).count(),
+            1,
+        )
+
+    @patch('apps.chats.call_services.broadcast_call_history_message')
+    @patch('apps.chats.call_services.broadcast_call_ended')
+    @patch('apps.chats.call_services.broadcast_user_event')
+    @patch('apps.chats.call_services._schedule_expiry')
+    @patch('apps.chats.call_services.is_user_online', return_value=True)
+    def test_missed_and_rejected_call_history_labels(
+        self, _online, _schedule, _broadcast, _ended, _history_broadcast
+    ):
+        missed, _ = start_call(
+            self.chat.id,
+            self.caller,
+            uuid.uuid4(),
+            media_mode=CallMediaMode.VIDEO,
+        )
+        expire_ringing_call(missed.id)
+        missed_msg = Message.objects.get(
+            chat_id=self.chat.id,
+            file_name=str(missed.id),
+        )
+        self.assertEqual(missed_msg.content, 'Пропущенный видеозвонок')
+        self.assertEqual(missed_msg.mime_type, CallStatus.MISSED)
+
+        ringing, _ = start_call(self.chat.id, self.caller, uuid.uuid4())
+        reject_call(ringing.id, self.callee)
+        rejected_msg = Message.objects.get(
+            chat_id=self.chat.id,
+            file_name=str(ringing.id),
+        )
+        self.assertEqual(rejected_msg.content, 'Отклонённый звонок')
+        self.assertEqual(rejected_msg.mime_type, CallStatus.REJECTED)
 
 
 @override_settings(CACHES=TEST_CACHES, CHANNEL_LAYERS=TEST_CHANNEL_LAYERS)
