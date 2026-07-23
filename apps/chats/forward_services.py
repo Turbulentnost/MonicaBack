@@ -202,7 +202,7 @@ def forward_messages(*, target_chat_id, source_chat_id, message_ids, user, comme
         raise
 
     from apps.chats.serializers import MessageSerializer
-    from apps.notifications.tasks import send_message_push
+    from apps.notifications.tasks import enqueue_message_push
 
     payload = json.loads(json.dumps(MessageSerializer(created_message).data, default=str))
     _broadcast_forward(created_message, payload)
@@ -210,5 +210,5 @@ def forward_messages(*, target_chat_id, source_chat_id, message_ids, user, comme
         'user_id', flat=True
     )
     for recipient_id in recipient_ids:
-        send_message_push.delay(str(created_message.id), str(recipient_id))
+        enqueue_message_push(str(created_message.id), str(recipient_id))
     return created_message

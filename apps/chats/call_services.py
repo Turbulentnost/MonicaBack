@@ -267,8 +267,9 @@ def start_call(chat_id, caller, client_instance_id, media_mode=CallMediaMode.AUD
     callee = next(participant.user for participant in participants if participant.user_id != caller.id)
     if not caller.is_active or not callee.is_active:
         raise CallError('unavailable', 'Участник звонка недоступен', 409)
-    if not is_user_online(callee.id):
-        raise CallError('offline', 'Пользователь не в сети', 409)
+    # Presence показывает только открытый UI. Офлайн-пользователь всё равно
+    # может получить data-only FCM: мобильный демон поднимет входящий звонок.
+    # Поэтому online не является условием создания звонка.
 
     call_id = uuid.uuid4()
     if not _reserve_users(caller.id, callee.id, call_id):

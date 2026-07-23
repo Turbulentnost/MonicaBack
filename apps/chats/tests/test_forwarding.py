@@ -60,7 +60,7 @@ class ForwardingTests(TransactionTestCase):
             format='json',
         )
 
-    @patch('apps.notifications.tasks.send_message_push.delay')
+    @patch('apps.notifications.tasks.enqueue_message_push')
     def test_single_forward_creates_snapshot_and_sets_origin(self, push_delay):
         source = Message.objects.create(
             chat=self.source_chat,
@@ -87,7 +87,7 @@ class ForwardingTests(TransactionTestCase):
             str(self.target_peer.id),
         )
 
-    @patch('apps.notifications.tasks.send_message_push.delay')
+    @patch('apps.notifications.tasks.enqueue_message_push')
     def test_multi_forward_preserves_requested_order(self, _push_delay):
         first = Message.objects.create(
             chat=self.source_chat,
@@ -109,7 +109,7 @@ class ForwardingTests(TransactionTestCase):
             [str(second.id), str(first.id)],
         )
 
-    @patch('apps.notifications.tasks.send_message_push.delay')
+    @patch('apps.notifications.tasks.enqueue_message_push')
     @patch('apps.chats.forward_services.upload_file')
     @patch('apps.chats.forward_services.download_object_bytes', return_value=b'image')
     def test_photo_paths_are_copied_and_urls_are_not_persisted(
@@ -164,7 +164,7 @@ class ForwardingTests(TransactionTestCase):
             delete_message_for_user(forwarded, self.user, 'everyone')
         delete.assert_called_once_with(item['content'])
 
-    @patch('apps.notifications.tasks.send_message_push.delay')
+    @patch('apps.notifications.tasks.enqueue_message_push')
     def test_requires_access_to_source_and_target(self, _push_delay):
         inaccessible_source = Message.objects.create(
             chat=self.outsider_chat,
@@ -191,7 +191,7 @@ class ForwardingTests(TransactionTestCase):
             Message.objects.filter(message_type=MessageType.FORWARD).exists()
         )
 
-    @patch('apps.notifications.tasks.send_message_push.delay')
+    @patch('apps.notifications.tasks.enqueue_message_push')
     def test_rejects_call_messages_strictly(self, _push_delay):
         text = Message.objects.create(
             chat=self.source_chat,
@@ -253,7 +253,7 @@ class ReplyConsumerTests(TransactionTestCase):
             ),
         ])
 
-    @patch('apps.notifications.tasks.send_message_push.delay')
+    @patch('apps.notifications.tasks.enqueue_message_push')
     def test_reply_must_be_visible_and_in_same_chat(self, _push_delay):
         async_to_sync(self._reply_scenario)()
 

@@ -5,6 +5,19 @@ from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
+# Даём клиенту (web/mobile) время отметить сообщение прочитанным,
+# прежде чем слать FCM. Пуш уходит только если сообщение всё ещё unread.
+MESSAGE_PUSH_DELAY_SEC = getattr(settings, 'MESSAGE_PUSH_DELAY_SEC', 5)
+
+
+def enqueue_message_push(message_id: str, recipient_id: str, *, countdown: int | None = None):
+    """Планирует FCM о сообщении с задержкой (проверка read_at / chat open)."""
+    delay = MESSAGE_PUSH_DELAY_SEC if countdown is None else int(countdown)
+    return send_message_push.apply_async(
+        args=[str(message_id), str(recipient_id)],
+        countdown=max(0, delay),
+    )
+
 
 @shared_task
 def expire_call(call_id: str):
@@ -23,7 +36,9 @@ def expire_call(call_id: str):
 def send_message_push(self, message_id: str, recipient_id: str):
     """
     Фоновая отправка FCM-пуша о новом сообщении.
-    Не шлём пуш, если получатель сейчас открыл этот чат (web/mobile WS).
+    Не шлём, если:
+    - получатель открыл этот чат (web/mobile WS);
+    - сообщение уже прочитано (read_at).
     """
     from apps.chats.models import Message
     from apps.chats.presence import is_user_viewing_chat
@@ -35,6 +50,14 @@ def send_message_push(self, message_id: str, recipient_id: str):
     except Message.DoesNotExist:
         logger.warning('Message %s not found for push', message_id)
         return {'ok': False, 'reason': 'message_not_found'}
+
+    if message.read_at is not None:
+        logger.info(
+            'Push skipped for user %s — message %s already read',
+            recipient_id,
+            message_id,
+        )
+        return {'ok': True, 'sent': 0, 'reason': 'already_read'}
 
     if is_user_viewing_chat(recipient_id, message.chat_id):
         logger.info(

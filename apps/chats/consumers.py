@@ -302,9 +302,9 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         recipient_ids = list(
             chat.participants.exclude(user=self.user).values_list('user_id', flat=True)
         )
-        from apps.notifications.tasks import send_message_push
+        from apps.notifications.tasks import enqueue_message_push
         for recipient_id in recipient_ids:
-            send_message_push.delay(str(message.id), str(recipient_id))
+            enqueue_message_push(str(message.id), str(recipient_id))
 
         return message
 

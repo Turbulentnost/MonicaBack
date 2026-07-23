@@ -9,8 +9,9 @@ ACTIVE_CHAT_CONN_KEY = 'presence:active_chat_conn:{user_id}:{chat_id}'
 # Пока WS жив, клиент шлёт ping ~каждые 20с. Если пингов нет — считаем offline.
 ALIVE_TTL_SEC = 90
 CONN_TTL_SEC = 90
-# Chat WS may stay open without a dedicated ping; refresh on activity.
-ACTIVE_CHAT_TTL_SEC = 180
+# Chat WS may stay open without a dedicated ping; refresh on activity / inbound events.
+# Disconnect снимает ключ явно; TTL — страховка от «зомби» после обрыва.
+ACTIVE_CHAT_TTL_SEC = 3600
 
 
 def _conn_key(user_id):

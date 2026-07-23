@@ -73,11 +73,11 @@ class CallServiceAndEndpointTests(TransactionTestCase):
         ChatParticipant.objects.create(chat=self.chat, user=self.callee)
 
     @patch('apps.chats.call_services.is_user_online', return_value=False)
-    def test_start_rejects_offline_callee(self, _online):
-        with self.assertRaises(CallError) as raised:
-            start_call(self.chat.id, self.caller, uuid.uuid4())
-        self.assertEqual(raised.exception.code, 'offline')
-        self.assertEqual(raised.exception.http_status, 409)
+    @patch('apps.chats.call_services._schedule_expiry')
+    def test_start_allows_offline_callee_for_fcm_delivery(self, _schedule, _online):
+        call, created = start_call(self.chat.id, self.caller, uuid.uuid4())
+        self.assertTrue(created)
+        self.assertEqual(call.status, CallStatus.RINGING)
 
     @patch('apps.chats.call_services.broadcast_call_ended')
     @patch('apps.chats.call_services.broadcast_user_event')
