@@ -22,6 +22,7 @@ from apps.chats.views_call import (
     RejectCallView,
     StartCallView,
 )
+from apps.chats.views_link_preview import LinkPreviewView
 from apps.notifications.views import (
     PrivateSessionAcceptView,
     PrivateSessionCloseView,
@@ -55,5 +56,6 @@ urlpatterns = [
     path('calls/ice-config/', IceConfigView.as_view()),
     path('users/search/', UserSearchView.as_view()),
     path('users/<uuid:user_id>/avatar/', UserAvatarView.as_view()),
+    path('link-preview/', LinkPreviewView.as_view()),
     path('media/', MediaProxyView.as_view()),
 ]
