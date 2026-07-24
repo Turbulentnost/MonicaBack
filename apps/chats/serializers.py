@@ -131,6 +131,7 @@ class ChatListSerializer(serializers.Serializer):
     partner = UserSerializer()
     last_message = MessageSerializer(allow_null=True)
     updated_at = serializers.DateTimeField()
+    background_url = serializers.CharField(allow_null=True, required=False)
 
 
 class SendMessageSerializer(serializers.Serializer):

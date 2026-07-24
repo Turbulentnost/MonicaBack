@@ -11,13 +11,16 @@ from apps.chats.code_runner import run_javascript_source, run_python_source
 from apps.chats.models import Chat, Message, MessageType
 from apps.chats.serializers import ForwardMessagesSerializer, MessageSerializer
 from apps.chats.services import (
+    clear_chat_background,
     delete_message_for_user,
     get_chat_history_cache_version,
     get_chat_partner,
     get_last_visible_message,
     get_or_create_direct_chat,
+    get_participant_background_url,
     get_user_chats,
     get_visible_messages,
+    set_chat_background,
     upload_chat_files,
 )
 from django.http import HttpResponse
@@ -66,6 +69,7 @@ class ChatListView(APIView):
                 'partner': UserSerializer(partner, context=ctx).data if partner else None,
                 'last_message': MessageSerializer(last_message, context=ctx).data if last_message else None,
                 'updated_at': chat.updated_at,
+                'background_url': get_participant_background_url(chat, request.user),
             })
         return Response(result)
 
@@ -170,6 +174,32 @@ class ChatFilesView(APIView):
         return Response(
             MessageSerializer(messages, many=True, context={'request': request}).data
         )
+
+
+class ChatBackgroundView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, chat_id):
+        try:
+            chat = get_user_chats(request.user).get(id=chat_id)
+        except Chat.DoesNotExist:
+            return Response({'detail': 'Чат не найден'}, status=404)
+
+        photo = request.FILES.get('photo') or request.FILES.get('file')
+        if not photo:
+            return Response({'photo': 'Файл обязателен'}, status=400)
+        try:
+            payload = set_chat_background(chat, request.user, photo)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=400)
+        return Response(payload)
+
+    def delete(self, request, chat_id):
+        try:
+            chat = get_user_chats(request.user).get(id=chat_id)
+        except Chat.DoesNotExist:
+            return Response({'detail': 'Чат не найден'}, status=404)
+        return Response(clear_chat_background(chat, request.user))
 
 
 class ChatMessageUploadView(APIView):

@@ -207,6 +207,74 @@ def upload_chat_files(chat, user, uploaded_files):
     return [upload_chat_file(chat, user, f) for f in uploaded_files]
 
 
+def get_participant_background_url(chat, user):
+    participant = chat.participants.filter(user=user).only('background').first()
+    if not participant or not participant.background:
+        return None
+    return get_presigned_url(participant.background)
+
+
+def set_chat_background(chat, user, uploaded_file):
+    if not uploaded_file:
+        raise ValueError('Файл обязателен')
+
+    content_type = (getattr(uploaded_file, 'content_type', None) or '').lower()
+    name = getattr(uploaded_file, 'name', '') or 'background.jpg'
+    ext = os.path.splitext(name)[1].lower()
+    image_exts = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
+    if content_type not in ALLOWED_IMAGE_TYPES and ext not in image_exts:
+        raise ValueError('Поддерживаются JPG, PNG, WEBP и GIF')
+
+    max_bytes = settings.CHAT_IMAGE_MAX_SIZE_MB * 1024 * 1024
+    if uploaded_file.size > max_bytes:
+        raise ValueError(
+            f'Файл слишком большой (макс. {settings.CHAT_IMAGE_MAX_SIZE_MB} МБ)'
+        )
+
+    object_ext = ext if ext in image_exts else '.jpg'
+    if object_ext == '.jpeg':
+        object_ext = '.jpg'
+    if content_type not in ALLOWED_IMAGE_TYPES:
+        content_type = {
+            '.jpg': 'image/jpeg',
+            '.png': 'image/png',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+        }.get(object_ext, 'image/jpeg')
+
+    object_name = f'{chat.id}/bg/{user.id}/{uuid.uuid4().hex}{object_ext}'
+    path = upload_file(
+        settings.MINIO_BUCKET_CHAT_FILES,
+        object_name,
+        uploaded_file,
+        content_type,
+    )
+
+    participant, _ = ChatParticipant.objects.get_or_create(chat=chat, user=user)
+    old_path = participant.background
+    participant.background = path
+    participant.save(update_fields=['background'])
+    if old_path and old_path != path:
+        delete_object(old_path)
+
+    return {
+        'background': path,
+        'background_url': get_presigned_url(path),
+    }
+
+
+def clear_chat_background(chat, user):
+    participant = chat.participants.filter(user=user).first()
+    if not participant:
+        return {'background': '', 'background_url': None}
+    old_path = participant.background
+    if old_path:
+        participant.background = ''
+        participant.save(update_fields=['background'])
+        delete_object(old_path)
+    return {'background': '', 'background_url': None}
+
+
 def can_delete_for_everyone(message, user):
     if message.sender_id != user.id:
         return False

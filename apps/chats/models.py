@@ -30,6 +30,8 @@ class ChatParticipant(models.Model):
     chat = models.ForeignKey(Chat, on_delete=models.CASCADE, related_name='participants')
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='chat_participations')
     joined_at = models.DateTimeField(auto_now_add=True)
+    # MinIO object path (bucket/object) for this user's personal chat wallpaper.
+    background = models.CharField(max_length=512, blank=True, default='')
 
     class Meta:
         unique_together = ('chat', 'user')
