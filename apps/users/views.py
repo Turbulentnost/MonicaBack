@@ -215,7 +215,8 @@ class UserAvatarView(APIView):
             return Response({'detail': 'Пользователь не найден'}, status=404)
 
         if not user.photo:
-            return Response({'detail': 'Аватар не установлен'}, status=404)
+            # Не 404: у многих пользователей аватар просто не задан.
+            return Response(status=204)
 
         try:
             data = download_object_bytes(user.photo, max_bytes=20 * 1024 * 1024)
