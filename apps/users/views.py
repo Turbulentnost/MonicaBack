@@ -4,6 +4,7 @@ from mimetypes import guess_type
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from django.http import HttpResponse
+from rest_framework import serializers as drf_serializers
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -12,8 +13,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.users.serializers import (
     AccountUpdateSerializer,
-    EmailSerializer,
     LoginSerializer,
+    PhoneSerializer,
     ProfileSerializer,
     RegistrationTokenSerializer,
     UserSerializer,
@@ -22,6 +23,7 @@ from apps.users.serializers import (
     send_verification_code,
     update_registration_session,
 )
+from apps.users.services.phone import format_phone_display
 from apps.users.services.minio_service import delete_object, download_object_bytes, upload_file
 
 User = get_user_model()
@@ -35,23 +37,28 @@ def _tokens_for_user(user):
     }
 
 
-class RegisterEmailView(APIView):
+class RegisterPhoneView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        serializer = EmailSerializer(data=request.data)
+        serializer = PhoneSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            code = send_verification_code(serializer.validated_data['email'])
+            code, is_debug = send_verification_code(serializer.validated_data['phone'])
+        except drf_serializers.ValidationError:
+            raise
         except Exception as exc:
             return Response(
-                {'detail': f'Не удалось отправить email: {exc}'},
+                {'detail': f'Не удалось отправить SMS: {exc}'},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
-        payload = {'detail': 'Код отправлен на email'}
-        # В режиме console/DEBUG показываем код, чтобы можно было пройти регистрацию без SMTP
-        if settings.DEBUG and 'console' in settings.EMAIL_BACKEND:
-            payload['detail'] = 'SMTP не настроен — код выведен в консоль бэкенда'
+        phone = serializer.validated_data['phone']
+        payload = {
+            'detail': f'Код отправлен на {format_phone_display(phone)}',
+            'phone': phone,
+        }
+        if is_debug or settings.DEBUG:
+            payload['detail'] = 'SMSC не настроен или DEBUG — используйте код из ответа'
             payload['debug_code'] = code
         return Response(payload)
 
@@ -64,7 +71,7 @@ class RegisterVerifyCodeView(APIView):
         serializer = VerifyCodeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         token = verify_code_and_create_session(
-            serializer.validated_data['email'],
+            serializer.validated_data['phone'],
             serializer.validated_data['code'],
         )
         return Response({'registration_token': token})
@@ -131,13 +138,20 @@ class LoginView(APIView):
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        # Accept both "login" and legacy "email" field name from older clients.
+        identifier = serializer.validated_data['login']
+        if not identifier and request.data.get('email'):
+            identifier = request.data.get('email')
         user = authenticate(
             request,
-            email=serializer.validated_data['email'],
+            login=identifier,
             password=serializer.validated_data['password'],
         )
         if not user:
-            return Response({'detail': 'Неверный email или пароль'}, status=401)
+            return Response(
+                {'detail': 'Неверный телефон/никнейм или пароль'},
+                status=401,
+            )
         return Response({
             'user': UserSerializer(user, context={'request': request}).data,
             'tokens': _tokens_for_user(user),

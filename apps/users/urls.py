@@ -7,13 +7,15 @@ from apps.users.views import (
     MeView,
     RegisterAvatarView,
     RegisterCompleteView,
-    RegisterEmailView,
+    RegisterPhoneView,
     RegisterProfileView,
     RegisterVerifyCodeView,
 )
 
 urlpatterns = [
-    path('register/email/', RegisterEmailView.as_view()),
+    path('register/phone/', RegisterPhoneView.as_view()),
+    # Legacy alias — same as phone registration.
+    path('register/email/', RegisterPhoneView.as_view()),
     path('register/verify-code/', RegisterVerifyCodeView.as_view()),
     path('register/profile/', RegisterProfileView.as_view()),
     path('register/avatar/', RegisterAvatarView.as_view()),

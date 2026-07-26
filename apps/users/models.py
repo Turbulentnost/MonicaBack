@@ -10,28 +10,45 @@ class UserRole(models.TextChoices):
 
 
 class UserManager(BaseUserManager):
-    def create_user(self, email, password=None, **extra_fields):
-        if not email:
-            raise ValueError('Email обязателен')
-        email = self.normalize_email(email)
-        user = self.model(email=email, **extra_fields)
+    def create_user(self, email=None, password=None, **extra_fields):
+        nickname = extra_fields.pop('nickname', None)
+        phone = extra_fields.pop('phone', None)
+        if not nickname:
+            raise ValueError('Никнейм обязателен')
+        if email:
+            email = self.normalize_email(email)
+        else:
+            email = None
+        user = self.model(
+            nickname=nickname,
+            email=email,
+            phone=phone or None,
+            **extra_fields,
+        )
         user.set_password(password)
         user.save(using=self._db)
         return user
 
-    def create_superuser(self, email, password=None, **extra_fields):
+    def create_superuser(self, nickname, password=None, email=None, phone=None, **extra_fields):
         extra_fields.setdefault('role', UserRole.ADMIN)
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
         extra_fields.setdefault('first_name', 'Admin')
         extra_fields.setdefault('last_name', 'Admin')
-        extra_fields.setdefault('nickname', f'admin_{uuid.uuid4().hex[:8]}')
-        return self.create_user(email, password, **extra_fields)
+        extra_fields['nickname'] = nickname
+        if phone:
+            extra_fields['phone'] = phone
+        elif 'phone' not in extra_fields:
+            extra_fields['phone'] = f'000{uuid.uuid4().hex[:11]}'
+        return self.create_user(email=email, password=password, **extra_fields)
 
 
 class User(AbstractBaseUser, PermissionsMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    email = models.EmailField(unique=True)
+    # Optional — can be attached later in settings.
+    email = models.EmailField(unique=True, null=True, blank=True)
+    # Required for new users; E.164 digits without '+'.
+    phone = models.CharField(max_length=32, unique=True, null=True, blank=True)
     role = models.CharField(max_length=10, choices=UserRole.choices, default=UserRole.USER)
     first_name = models.CharField(max_length=150)
     last_name = models.CharField(max_length=150)
@@ -47,8 +64,8 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     objects = UserManager()
 
-    USERNAME_FIELD = 'email'
-    REQUIRED_FIELDS = ['first_name', 'last_name', 'nickname']
+    USERNAME_FIELD = 'nickname'
+    REQUIRED_FIELDS = ['first_name', 'last_name']
 
     class Meta:
         ordering = ['-created_at']

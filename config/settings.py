@@ -110,7 +110,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_USER_MODEL = 'users.User'
 
 AUTHENTICATION_BACKENDS = [
-    'apps.users.backends.EmailBackend',
+    'apps.users.backends.LoginBackend',
     'django.contrib.auth.backends.ModelBackend',
 ]
 
@@ -173,6 +173,11 @@ MINIO_PUBLIC_ENDPOINT = os.getenv('MINIO_PUBLIC_ENDPOINT', '')
 
 REGISTRATION_CODE_TTL = 900
 REGISTRATION_SESSION_TTL = 300
+
+# SMSC.ru — OTP SMS (https://smsc.ru/)
+SMSC_LOGIN = os.getenv('SMSC_LOGIN', '')
+SMSC_PASSWORD = os.getenv('SMSC_PASSWORD', '')
+SMSC_SENDER = os.getenv('SMSC_SENDER', '')
 
 # Кэш результатов поиска пользователей (секунды)
 USER_SEARCH_CACHE_TTL = int(os.getenv('USER_SEARCH_CACHE_TTL', '90'))

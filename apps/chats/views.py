@@ -484,12 +484,7 @@ class UserSearchView(APIView):
             return Response(cached)
 
         users = (
-            User.objects.filter(
-                Q(nickname__icontains=q)
-                | Q(first_name__icontains=q)
-                | Q(last_name__icontains=q)
-                | Q(email__icontains=q)
-            )
+            User.objects.filter(nickname__icontains=q)
             .exclude(id=request.user.id)
             .distinct()[:20]
         )
