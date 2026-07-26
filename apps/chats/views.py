@@ -77,7 +77,10 @@ class CreateGroupChatView(APIView):
                 request.user,
                 serializer.validated_data['title'],
                 serializer.validated_data['member_ids'],
+                photo=serializer.validated_data.get('photo'),
             )
+        except PermissionError as exc:
+            return Response({'detail': str(exc)}, status=403)
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=400)
 

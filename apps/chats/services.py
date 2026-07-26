@@ -122,10 +122,11 @@ def user_can_manage_group(chat, user):
     return bool(participant and participant.role in GROUP_ADMIN_ROLES)
 
 
-def create_group_chat(creator, title, member_ids):
+def create_group_chat(creator, title, member_ids, photo=None):
     """
     Создаёт группу. member_ids — UUID существующих пользователей (без создателя).
     Разрешены любые существующие user id (не только с direct-чатом).
+    photo — опциональный аватар группы (UploadedFile).
     """
     title = (title or '').strip()
     if not title:
@@ -175,7 +176,58 @@ def create_group_chat(creator, title, member_ids):
         )
         for member in members
     ])
+    if photo is not None:
+        set_group_photo(chat, creator, photo)
+        chat.refresh_from_db(fields=['photo', 'updated_at'])
     return chat
+
+
+def set_group_photo(chat, actor, uploaded_file):
+    if chat.chat_type != ChatType.GROUP:
+        raise PermissionError('Аватар можно задать только для группы')
+    if not user_can_manage_group(chat, actor):
+        raise PermissionError('Недостаточно прав')
+    if not uploaded_file:
+        raise ValueError('Файл обязателен')
+
+    content_type = (getattr(uploaded_file, 'content_type', None) or '').lower()
+    name = getattr(uploaded_file, 'name', '') or 'group.jpg'
+    ext = os.path.splitext(name)[1].lower()
+    image_exts = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
+    if content_type not in ALLOWED_IMAGE_TYPES and ext not in image_exts:
+        raise ValueError('Поддерживаются JPG, PNG, WEBP и GIF')
+
+    max_bytes = min(10, settings.CHAT_IMAGE_MAX_SIZE_MB) * 1024 * 1024
+    if uploaded_file.size > max_bytes:
+        raise ValueError(f'Файл слишком большой (макс. {max_bytes // (1024 * 1024)} МБ)')
+
+    object_ext = ext if ext in image_exts else '.jpg'
+    if object_ext == '.jpeg':
+        object_ext = '.jpg'
+    if content_type not in ALLOWED_IMAGE_TYPES:
+        content_type = {
+            '.jpg': 'image/jpeg',
+            '.png': 'image/png',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+        }.get(object_ext, 'image/jpeg')
+
+    object_name = f'{chat.id}/avatar/{uuid.uuid4().hex}{object_ext}'
+    path = upload_file(
+        settings.MINIO_BUCKET_CHAT_FILES,
+        object_name,
+        uploaded_file,
+        content_type,
+    )
+    old_path = chat.photo
+    chat.photo = path
+    chat.save(update_fields=['photo', 'updated_at'])
+    if old_path and old_path != path:
+        delete_object(old_path)
+    return {
+        'photo': path,
+        'photo_url': get_presigned_url(path),
+    }
 
 
 def add_group_members(chat, actor, user_ids):
@@ -302,11 +354,14 @@ def serialize_chat_list_item(chat, user, request=None):
             partner = get_chat_partner(chat, user)
         members = None
 
+    photo = (chat.photo or '') if is_group else ''
     return {
         'id': chat.id,
         'chat_type': chat.chat_type,
         'is_group': is_group,
         'title': chat.title if is_group else None,
+        'photo': photo or None,
+        'photo_url': get_presigned_url(photo) if photo else None,
         'partner': UserSerializer(partner, context=ctx).data if partner else None,
         'members': members,
         'members_count': len(participants),

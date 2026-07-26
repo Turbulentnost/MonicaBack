@@ -131,6 +131,8 @@ class ChatListSerializer(serializers.Serializer):
     chat_type = serializers.ChoiceField(choices=['direct', 'group'])
     is_group = serializers.BooleanField()
     title = serializers.CharField(allow_null=True, allow_blank=True)
+    photo = serializers.CharField(allow_null=True, required=False)
+    photo_url = serializers.CharField(allow_null=True, required=False)
     partner = UserSerializer(allow_null=True)
     members = serializers.ListField(child=serializers.DictField(), allow_null=True)
     members_count = serializers.IntegerField()
@@ -147,6 +149,7 @@ class CreateGroupChatSerializer(serializers.Serializer):
         max_length=100,
         allow_empty=False,
     )
+    photo = serializers.FileField(required=False, allow_null=True)
 
     def validate_title(self, value):
         title = (value or '').strip()
@@ -155,6 +158,31 @@ class CreateGroupChatSerializer(serializers.Serializer):
         if len(title) > 64:
             raise serializers.ValidationError('Название не длиннее 64 символов')
         return title
+
+    def to_internal_value(self, data):
+        # Multipart may send member_ids as repeated fields or a JSON string.
+        if hasattr(data, 'getlist'):
+            import json
+
+            mutable = {}
+            for key in data.keys():
+                if key == 'member_ids':
+                    continue
+                value = data.get(key)
+                if key == 'photo' and value in ('', None):
+                    continue
+                mutable[key] = value
+            ids = data.getlist('member_ids')
+            if ids:
+                if len(ids) == 1 and isinstance(ids[0], str) and ids[0].strip().startswith('['):
+                    try:
+                        mutable['member_ids'] = json.loads(ids[0])
+                    except json.JSONDecodeError:
+                        mutable['member_ids'] = ids
+                else:
+                    mutable['member_ids'] = ids
+            data = mutable
+        return super().to_internal_value(data)
 
 
 class AddGroupMembersSerializer(serializers.Serializer):

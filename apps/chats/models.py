@@ -34,6 +34,8 @@ class Chat(models.Model):
         db_index=True,
     )
     title = models.CharField(max_length=64, blank=True, default='')
+    # MinIO object path (bucket/object) for group avatar.
+    photo = models.CharField(max_length=512, blank=True, default='')
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         null=True,
