@@ -10,6 +10,7 @@ from apps.users.views import (
     RegisterPhoneView,
     RegisterProfileView,
     RegisterVerifyCodeView,
+    TelegramWebhookView,
 )
 
 urlpatterns = [
@@ -20,6 +21,7 @@ urlpatterns = [
     path('register/profile/', RegisterProfileView.as_view()),
     path('register/avatar/', RegisterAvatarView.as_view()),
     path('register/complete/', RegisterCompleteView.as_view()),
+    path('telegram/webhook/', TelegramWebhookView.as_view()),
     path('login/', LoginView.as_view()),
     path('me/', MeView.as_view()),
     path('me/avatar/', MeAvatarView.as_view()),

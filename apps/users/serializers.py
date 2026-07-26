@@ -1,5 +1,4 @@
 import json
-import random
 import re
 import secrets
 
@@ -8,8 +7,8 @@ from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from rest_framework import serializers
 
-from apps.users.services.phone import format_phone_display, normalize_phone
-from apps.users.services.smsc import SmscError, send_sms, smsc_configured
+from apps.users.services.phone import normalize_phone
+from apps.users.services.telegram_auth import create_telegram_verification
 
 User = get_user_model()
 
@@ -62,7 +61,7 @@ class LoginSerializer(serializers.Serializer):
     def validate(self, attrs):
         identifier = (attrs.get('login') or attrs.get('email') or '').strip()
         if not identifier:
-            raise serializers.ValidationError({'login': 'Укажите телефон или никнейм'})
+            raise serializers.ValidationError({'login': 'Укажите телефон, никнейм или email'})
         attrs['login'] = identifier
         return attrs
 
@@ -154,25 +153,8 @@ def _reg_session_key(token):
 
 
 def send_verification_code(phone):
-    phone = normalize_phone(phone)
-    if User.objects.filter(phone=phone).exists():
-        raise serializers.ValidationError({'phone': 'Пользователь с таким номером уже существует'})
-
-    code = f'{random.randint(0, 999999):06d}'
-    cache.set(_phone_code_key(phone), code, settings.REGISTRATION_CODE_TTL)
-
-    message = f'Monica: код подтверждения {code}. Действителен 15 минут.'
-
-    if smsc_configured():
-        try:
-            send_sms(phone, message)
-        except SmscError as exc:
-            cache.delete(_phone_code_key(phone))
-            raise serializers.ValidationError({'detail': str(exc)}) from exc
-        return code, False
-
-    # Dev / not configured: keep code in cache, expose via debug_code.
-    return code, True
+    """Start phone verification via Telegram bot deep link (or debug_code)."""
+    return create_telegram_verification(phone)
 
 
 def verify_code_and_create_session(phone, code):

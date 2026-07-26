@@ -174,7 +174,16 @@ MINIO_PUBLIC_ENDPOINT = os.getenv('MINIO_PUBLIC_ENDPOINT', '')
 REGISTRATION_CODE_TTL = 900
 REGISTRATION_SESSION_TTL = 300
 
-# SMSC.ru — OTP SMS (https://smsc.ru/)
+# Telegram bot — OTP via deep link (https://t.me/<bot>?start=<token>)
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_BOT_USERNAME = os.getenv('TELEGRAM_BOT_USERNAME', '')  # without @
+TELEGRAM_WEBHOOK_SECRET = os.getenv('TELEGRAM_WEBHOOK_SECRET', '')
+TELEGRAM_WEBHOOK_URL = os.getenv(
+    'TELEGRAM_WEBHOOK_URL',
+    'https://metamonica.ru/api/auth/telegram/webhook/',
+)
+
+# Legacy SMSC.ru (optional; registration uses Telegram bot)
 SMSC_LOGIN = os.getenv('SMSC_LOGIN', '')
 SMSC_PASSWORD = os.getenv('SMSC_PASSWORD', '')
 SMSC_SENDER = os.getenv('SMSC_SENDER', '')

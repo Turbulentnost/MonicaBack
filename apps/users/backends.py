@@ -7,7 +7,7 @@ User = get_user_model()
 
 
 class LoginBackend(ModelBackend):
-    """Authenticate by phone number or nickname (+ password)."""
+    """Authenticate by phone, nickname or email (+ password)."""
 
     def authenticate(self, request, username=None, password=None, login=None, **kwargs):
         identifier = login or username or kwargs.get('email')
@@ -28,6 +28,9 @@ class LoginBackend(ModelBackend):
             except Exception:
                 return None
             return User.objects.filter(phone=phone).first()
+
+        if '@' in identifier:
+            return User.objects.filter(email__iexact=identifier).first()
 
         # Nickname (exact, case-insensitive)
         return User.objects.filter(nickname__iexact=identifier).first()

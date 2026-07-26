@@ -23,8 +23,9 @@ from apps.users.serializers import (
     send_verification_code,
     update_registration_session,
 )
-from apps.users.services.phone import format_phone_display
 from apps.users.services.minio_service import delete_object, download_object_bytes, upload_file
+from apps.users.services.telegram_auth import handle_telegram_update
+from apps.users.services.telegram_bot import telegram_configured
 
 User = get_user_model()
 
@@ -44,23 +45,47 @@ class RegisterPhoneView(APIView):
         serializer = PhoneSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         try:
-            code, is_debug = send_verification_code(serializer.validated_data['phone'])
+            result = send_verification_code(serializer.validated_data['phone'])
         except drf_serializers.ValidationError:
             raise
         except Exception as exc:
             return Response(
-                {'detail': f'Не удалось отправить SMS: {exc}'},
+                {'detail': f'Не удалось начать подтверждение: {exc}'},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
-        phone = serializer.validated_data['phone']
+
         payload = {
-            'detail': f'Код отправлен на {format_phone_display(phone)}',
-            'phone': phone,
+            'phone': result['phone'],
+            'channel': result.get('channel') or 'telegram',
+            'detail': result.get('detail') or 'Откройте Telegram, чтобы получить код',
+            'telegram_url': result.get('telegram_url') or '',
+            'bot_username': result.get('bot_username') or '',
         }
-        if is_debug or settings.DEBUG:
-            payload['detail'] = 'SMSC не настроен или DEBUG — используйте код из ответа'
-            payload['debug_code'] = code
+        if result.get('debug_code') and (settings.DEBUG or not telegram_configured()):
+            payload['debug_code'] = result['debug_code']
+            payload['detail'] = 'Telegram-бот не настроен — используйте код из ответа (dev)'
         return Response(payload)
+
+
+class TelegramWebhookView(APIView):
+    """Telegram Bot webhook — OTP after /start + contact confirm."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        secret = getattr(settings, 'TELEGRAM_WEBHOOK_SECRET', '') or ''
+        if secret:
+            header = request.headers.get('X-Telegram-Bot-Api-Secret-Token', '')
+            if header != secret:
+                return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            handle_telegram_update(request.data if isinstance(request.data, dict) else {})
+        except Exception:
+            # Always 200 so Telegram does not retry aggressively on app bugs.
+            import logging
+            logging.getLogger(__name__).exception('Telegram webhook handler failed')
+        return Response({'ok': True})
 
 
 class RegisterVerifyCodeView(APIView):
@@ -149,7 +174,7 @@ class LoginView(APIView):
         )
         if not user:
             return Response(
-                {'detail': 'Неверный телефон/никнейм или пароль'},
+                {'detail': 'Неверный телефон, никнейм, email или пароль'},
                 status=401,
             )
         return Response({

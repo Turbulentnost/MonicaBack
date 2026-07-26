@@ -60,5 +60,26 @@ def send_sms(phone: str, message: str) -> dict:
         raise SmscError(f'Некорректный ответ SMSC: {body[:200]}') from exc
 
     if isinstance(data, dict) and data.get('error_code'):
-        raise SmscError(data.get('error') or 'Ошибка SMSC', code=data.get('error_code'))
+        raise SmscError(_friendly_error(data), code=data.get('error_code'))
     return data if isinstance(data, dict) else {'raw': data}
+
+
+# SMSC error_code → user-facing Russian message
+_SMSC_ERROR_MESSAGES = {
+    1: 'Ошибка SMSC: неверный логин или пароль',
+    2: 'Ошибка SMSC: неверный номер телефона',
+    3: 'Недостаточно средств на SMSC для отправки SMS. Пополните баланс в кабинете smsc.ru',
+    4: 'Ошибка SMSC: IP-адрес временно заблокирован',
+    5: 'Ошибка SMSC: неверный формат даты',
+    6: 'Ошибка SMSC: сообщение запрещено (или пустой текст)',
+    7: 'Ошибка SMSC: неверный формат номера',
+    8: 'Ошибка SMSC: сообщение не может быть доставлено',
+    9: 'Ошибка SMSC: слишком много запросов, повторите позже',
+}
+
+
+def _friendly_error(data: dict) -> str:
+    code = data.get('error_code')
+    if code in _SMSC_ERROR_MESSAGES:
+        return _SMSC_ERROR_MESSAGES[code]
+    return data.get('error') or 'Ошибка SMSC'
