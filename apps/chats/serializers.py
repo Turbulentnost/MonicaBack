@@ -128,10 +128,52 @@ class MessageSerializer(serializers.ModelSerializer):
 
 class ChatListSerializer(serializers.Serializer):
     id = serializers.UUIDField()
-    partner = UserSerializer()
+    chat_type = serializers.ChoiceField(choices=['direct', 'group'])
+    is_group = serializers.BooleanField()
+    title = serializers.CharField(allow_null=True, allow_blank=True)
+    partner = UserSerializer(allow_null=True)
+    members = serializers.ListField(child=serializers.DictField(), allow_null=True)
+    members_count = serializers.IntegerField()
     last_message = MessageSerializer(allow_null=True)
     updated_at = serializers.DateTimeField()
     background_url = serializers.CharField(allow_null=True, required=False)
+
+
+class CreateGroupChatSerializer(serializers.Serializer):
+    title = serializers.CharField(max_length=64, trim_whitespace=True)
+    member_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        min_length=1,
+        max_length=100,
+        allow_empty=False,
+    )
+
+    def validate_title(self, value):
+        title = (value or '').strip()
+        if not title:
+            raise serializers.ValidationError('Название группы обязательно')
+        if len(title) > 64:
+            raise serializers.ValidationError('Название не длиннее 64 символов')
+        return title
+
+
+class AddGroupMembersSerializer(serializers.Serializer):
+    user_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        min_length=1,
+        max_length=100,
+        allow_empty=False,
+    )
+
+
+class UpdateChatSerializer(serializers.Serializer):
+    title = serializers.CharField(max_length=64, trim_whitespace=True, required=False)
+
+    def validate_title(self, value):
+        title = (value or '').strip()
+        if not title:
+            raise serializers.ValidationError('Название группы обязательно')
+        return title
 
 
 class SendMessageSerializer(serializers.Serializer):

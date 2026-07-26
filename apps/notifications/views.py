@@ -124,6 +124,9 @@ class PrivateSessionInviteView(APIView):
         except Chat.DoesNotExist:
             return Response({'detail': 'Чат не найден'}, status=404)
 
+        if getattr(chat, 'chat_type', 'direct') == 'group':
+            return Response({'detail': 'Приватная сессия доступна только в личном чате'}, status=400)
+
         partner = get_chat_partner(chat, request.user)
         if not partner:
             return Response({'detail': 'Собеседник не найден'}, status=400)

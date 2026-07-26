@@ -14,8 +14,33 @@ class MessageType(models.TextChoices):
     CALL = 'call', 'Звонок'
 
 
+class ChatType(models.TextChoices):
+    DIRECT = 'direct', 'Личный'
+    GROUP = 'group', 'Группа'
+
+
+class ChatParticipantRole(models.TextChoices):
+    OWNER = 'owner', 'Владелец'
+    ADMIN = 'admin', 'Админ'
+    MEMBER = 'member', 'Участник'
+
+
 class Chat(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    chat_type = models.CharField(
+        max_length=16,
+        choices=ChatType.choices,
+        default=ChatType.DIRECT,
+        db_index=True,
+    )
+    title = models.CharField(max_length=64, blank=True, default='')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='chats_created',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -23,12 +48,23 @@ class Chat(models.Model):
         ordering = ['-updated_at']
 
     def __str__(self):
+        if self.chat_type == ChatType.GROUP and self.title:
+            return f'{self.title} ({self.id})'
         return str(self.id)
+
+    @property
+    def is_group(self):
+        return self.chat_type == ChatType.GROUP
 
 
 class ChatParticipant(models.Model):
     chat = models.ForeignKey(Chat, on_delete=models.CASCADE, related_name='participants')
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='chat_participations')
+    role = models.CharField(
+        max_length=16,
+        choices=ChatParticipantRole.choices,
+        default=ChatParticipantRole.MEMBER,
+    )
     joined_at = models.DateTimeField(auto_now_add=True)
     # MinIO object path (bucket/object) for this user's personal chat wallpaper.
     background = models.CharField(max_length=512, blank=True, default='')

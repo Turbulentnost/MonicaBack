@@ -9,18 +9,28 @@ from rest_framework.views import APIView
 
 from apps.chats.code_runner import run_javascript_source, run_python_source
 from apps.chats.models import Chat, Message, MessageType
-from apps.chats.serializers import ForwardMessagesSerializer, MessageSerializer
+from apps.chats.serializers import (
+    AddGroupMembersSerializer,
+    CreateGroupChatSerializer,
+    ForwardMessagesSerializer,
+    MessageSerializer,
+    UpdateChatSerializer,
+)
 from apps.chats.services import (
+    add_group_members,
+    chats_with_participants_prefetch,
     clear_chat_background,
+    create_group_chat,
     delete_message_for_user,
     get_chat_history_cache_version,
-    get_chat_partner,
-    get_last_visible_message,
     get_or_create_direct_chat,
     get_participant_background_url,
     get_user_chats,
     get_visible_messages,
+    remove_group_member,
+    serialize_chat_list_item,
     set_chat_background,
+    update_group_title,
     upload_chat_files,
 )
 from django.http import HttpResponse
@@ -45,11 +55,41 @@ class StartChatView(APIView):
             return Response({'detail': 'Пользователь не найден'}, status=404)
 
         chat, _ = get_or_create_direct_chat(request.user, recipient)
-        partner = get_chat_partner(chat, request.user)
-        return Response({
-            'id': chat.id,
-            'partner': UserSerializer(partner, context={'request': request}).data,
-        }, status=status.HTTP_200_OK)
+        chat = (
+            get_user_chats(request.user)
+            .prefetch_related(chats_with_participants_prefetch())
+            .get(id=chat.id)
+        )
+        return Response(
+            serialize_chat_list_item(chat, request.user, request=request),
+            status=status.HTTP_200_OK,
+        )
+
+
+class CreateGroupChatView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = CreateGroupChatSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            chat = create_group_chat(
+                request.user,
+                serializer.validated_data['title'],
+                serializer.validated_data['member_ids'],
+            )
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=400)
+
+        chat = (
+            get_user_chats(request.user)
+            .prefetch_related(chats_with_participants_prefetch())
+            .get(id=chat.id)
+        )
+        return Response(
+            serialize_chat_list_item(chat, request.user, request=request),
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class ChatListView(APIView):
@@ -57,21 +97,109 @@ class ChatListView(APIView):
 
     def get(self, request):
         chats = get_user_chats(request.user).prefetch_related(
-            'participants__user', 'messages__sender'
+            chats_with_participants_prefetch(),
+            'messages__sender',
         )
-        result = []
-        for chat in chats:
-            partner = get_chat_partner(chat, request.user)
-            last_message = get_last_visible_message(chat, request.user)
-            ctx = {'request': request}
-            result.append({
-                'id': chat.id,
-                'partner': UserSerializer(partner, context=ctx).data if partner else None,
-                'last_message': MessageSerializer(last_message, context=ctx).data if last_message else None,
-                'updated_at': chat.updated_at,
-                'background_url': get_participant_background_url(chat, request.user),
-            })
+        result = [
+            serialize_chat_list_item(chat, request.user, request=request)
+            for chat in chats
+        ]
         return Response(result)
+
+
+class ChatDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, chat_id):
+        try:
+            chat = (
+                get_user_chats(request.user)
+                .prefetch_related(chats_with_participants_prefetch())
+                .get(id=chat_id)
+            )
+        except Chat.DoesNotExist:
+            return Response({'detail': 'Чат не найден'}, status=404)
+        return Response(serialize_chat_list_item(chat, request.user, request=request))
+
+    def patch(self, request, chat_id):
+        try:
+            chat = get_user_chats(request.user).get(id=chat_id)
+        except Chat.DoesNotExist:
+            return Response({'detail': 'Чат не найден'}, status=404)
+
+        serializer = UpdateChatSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        if 'title' not in serializer.validated_data:
+            return Response({'detail': 'Нечего обновлять'}, status=400)
+        try:
+            update_group_title(chat, request.user, serializer.validated_data['title'])
+        except PermissionError as exc:
+            return Response({'detail': str(exc)}, status=403)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=400)
+
+        chat = (
+            get_user_chats(request.user)
+            .prefetch_related(chats_with_participants_prefetch())
+            .get(id=chat.id)
+        )
+        return Response(serialize_chat_list_item(chat, request.user, request=request))
+
+
+class ChatMembersView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, chat_id):
+        try:
+            chat = get_user_chats(request.user).get(id=chat_id)
+        except Chat.DoesNotExist:
+            return Response({'detail': 'Чат не найден'}, status=404)
+
+        serializer = AddGroupMembersSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            add_group_members(chat, request.user, serializer.validated_data['user_ids'])
+        except PermissionError as exc:
+            return Response({'detail': str(exc)}, status=403)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=400)
+
+        chat = (
+            get_user_chats(request.user)
+            .prefetch_related(chats_with_participants_prefetch())
+            .get(id=chat.id)
+        )
+        return Response(serialize_chat_list_item(chat, request.user, request=request))
+
+
+class ChatMemberDeleteView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, chat_id, user_id):
+        try:
+            chat = get_user_chats(request.user).get(id=chat_id)
+        except Chat.DoesNotExist:
+            return Response({'detail': 'Чат не найден'}, status=404)
+
+        try:
+            remove_group_member(chat, request.user, user_id)
+        except PermissionError as exc:
+            return Response({'detail': str(exc)}, status=403)
+        except LookupError as exc:
+            return Response({'detail': str(exc)}, status=404)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=400)
+
+        # Self-leave: чат больше не в списке пользователя
+        if not get_user_chats(request.user).filter(id=chat_id).exists():
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        chat = (
+            get_user_chats(request.user)
+            .prefetch_related(chats_with_participants_prefetch())
+            .get(id=chat_id)
+        )
+        return Response(serialize_chat_list_item(chat, request.user, request=request))
 
 
 class ChatMessagesView(APIView):

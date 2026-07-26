@@ -261,7 +261,7 @@ def start_call(chat_id, caller, client_instance_id, media_mode=CallMediaMode.AUD
     participants = list(chat.participants.all())
     if not any(participant.user_id == caller.id for participant in participants):
         raise CallError('forbidden', 'Нет доступа к чату', 403)
-    if len(participants) != 2:
+    if getattr(chat, 'chat_type', 'direct') == 'group' or len(participants) != 2:
         raise CallError('not_one_to_one', 'Звонки доступны только в чате один на один', 409)
 
     callee = next(participant.user for participant in participants if participant.user_id != caller.id)

@@ -6,14 +6,25 @@ from channels.layers import get_channel_layer
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.db.models import Count, Prefetch
 from django.utils import timezone
 
-from apps.chats.models import Chat, ChatParticipant, Message, MessageHidden, MessageType
+from apps.chats.models import (
+    Chat,
+    ChatParticipant,
+    ChatParticipantRole,
+    ChatType,
+    Message,
+    MessageHidden,
+    MessageType,
+)
 from apps.users.services.minio_service import delete_object, get_presigned_url, upload_file
 
 User = get_user_model()
 
 MESSAGE_EDIT_MAX_DAYS = 7
+GROUP_TITLE_MAX_LEN = 64
+GROUP_ADMIN_ROLES = {ChatParticipantRole.OWNER, ChatParticipantRole.ADMIN}
 
 
 def get_chat_history_cache_version(chat_id) -> int:
@@ -64,18 +75,26 @@ def get_or_create_direct_chat(user_a, user_b):
     if user_a.id == user_b.id:
         raise ValueError('Нельзя создать чат с самим собой')
 
-    existing = Chat.objects.filter(
-        participants__user=user_a
-    ).filter(
-        participants__user=user_b
-    ).distinct().first()
+    existing = (
+        Chat.objects.filter(chat_type=ChatType.DIRECT)
+        .filter(participants__user=user_a)
+        .filter(participants__user=user_b)
+        .annotate(participant_count=Count('participants', distinct=True))
+        .filter(participant_count=2)
+        .distinct()
+        .first()
+    )
 
     if existing:
         return existing, False
 
-    chat = Chat.objects.create()
-    ChatParticipant.objects.create(chat=chat, user=user_a)
-    ChatParticipant.objects.create(chat=chat, user=user_b)
+    chat = Chat.objects.create(chat_type=ChatType.DIRECT)
+    ChatParticipant.objects.create(
+        chat=chat, user=user_a, role=ChatParticipantRole.MEMBER,
+    )
+    ChatParticipant.objects.create(
+        chat=chat, user=user_b, role=ChatParticipantRole.MEMBER,
+    )
     return chat, True
 
 
@@ -84,12 +103,226 @@ def get_user_chats(user):
 
 
 def get_chat_partner(chat, user):
+    if getattr(chat, 'chat_type', ChatType.DIRECT) == ChatType.GROUP:
+        return None
     participant = chat.participants.exclude(user=user).select_related('user').first()
     return participant.user if participant else None
 
 
 def user_in_chat(chat, user):
     return chat.participants.filter(user=user).exists()
+
+
+def get_participant(chat, user):
+    return chat.participants.filter(user=user).select_related('user').first()
+
+
+def user_can_manage_group(chat, user):
+    participant = get_participant(chat, user)
+    return bool(participant and participant.role in GROUP_ADMIN_ROLES)
+
+
+def create_group_chat(creator, title, member_ids):
+    """
+    Создаёт группу. member_ids — UUID существующих пользователей (без создателя).
+    Разрешены любые существующие user id (не только с direct-чатом).
+    """
+    title = (title or '').strip()
+    if not title:
+        raise ValueError('Название группы обязательно')
+    if len(title) > GROUP_TITLE_MAX_LEN:
+        raise ValueError(f'Название не длиннее {GROUP_TITLE_MAX_LEN} символов')
+
+    if not member_ids:
+        raise ValueError('Укажите хотя бы одного участника')
+
+    unique_ids = []
+    seen = set()
+    for raw_id in member_ids:
+        try:
+            uid = uuid.UUID(str(raw_id))
+        except (TypeError, ValueError):
+            raise ValueError(f'Некорректный id участника: {raw_id}')
+        if uid == creator.id or uid in seen:
+            continue
+        seen.add(uid)
+        unique_ids.append(uid)
+
+    if not unique_ids:
+        raise ValueError('Укажите хотя бы одного участника кроме себя')
+
+    members = list(User.objects.filter(id__in=unique_ids, is_active=True))
+    found_ids = {user.id for user in members}
+    missing = [str(uid) for uid in unique_ids if uid not in found_ids]
+    if missing:
+        raise ValueError(f'Пользователи не найдены: {", ".join(missing)}')
+
+    chat = Chat.objects.create(
+        chat_type=ChatType.GROUP,
+        title=title,
+        created_by=creator,
+    )
+    ChatParticipant.objects.create(
+        chat=chat,
+        user=creator,
+        role=ChatParticipantRole.OWNER,
+    )
+    ChatParticipant.objects.bulk_create([
+        ChatParticipant(
+            chat=chat,
+            user=member,
+            role=ChatParticipantRole.MEMBER,
+        )
+        for member in members
+    ])
+    return chat
+
+
+def add_group_members(chat, actor, user_ids):
+    if chat.chat_type != ChatType.GROUP:
+        raise PermissionError('Участников можно добавлять только в группу')
+    if not user_can_manage_group(chat, actor):
+        raise PermissionError('Недостаточно прав')
+
+    unique_ids = []
+    seen = set()
+    for raw_id in user_ids or []:
+        try:
+            uid = uuid.UUID(str(raw_id))
+        except (TypeError, ValueError):
+            raise ValueError(f'Некорректный id участника: {raw_id}')
+        if uid in seen:
+            continue
+        seen.add(uid)
+        unique_ids.append(uid)
+
+    if not unique_ids:
+        raise ValueError('Укажите хотя бы одного участника')
+
+    existing_ids = set(
+        chat.participants.filter(user_id__in=unique_ids).values_list('user_id', flat=True)
+    )
+    to_add_ids = [uid for uid in unique_ids if uid not in existing_ids]
+    if not to_add_ids:
+        return []
+
+    users = list(User.objects.filter(id__in=to_add_ids, is_active=True))
+    found = {user.id for user in users}
+    missing = [str(uid) for uid in to_add_ids if uid not in found]
+    if missing:
+        raise ValueError(f'Пользователи не найдены: {", ".join(missing)}')
+
+    created = ChatParticipant.objects.bulk_create([
+        ChatParticipant(chat=chat, user=user, role=ChatParticipantRole.MEMBER)
+        for user in users
+    ])
+    chat.save(update_fields=['updated_at'])
+    return created
+
+
+def remove_group_member(chat, actor, target_user_id):
+    if chat.chat_type != ChatType.GROUP:
+        raise PermissionError('Участников можно удалять только из группы')
+
+    try:
+        target_user_id = uuid.UUID(str(target_user_id))
+    except (TypeError, ValueError):
+        raise ValueError('Некорректный id участника')
+
+    target = chat.participants.filter(user_id=target_user_id).select_related('user').first()
+    if not target:
+        raise LookupError('Участник не найден')
+
+    actor_participation = get_participant(chat, actor)
+    if not actor_participation:
+        raise PermissionError('Нет доступа к чату')
+
+    is_self = actor.id == target_user_id
+    if not is_self and actor_participation.role not in GROUP_ADMIN_ROLES:
+        raise PermissionError('Недостаточно прав')
+
+    if target.role == ChatParticipantRole.OWNER:
+        owners_count = chat.participants.filter(role=ChatParticipantRole.OWNER).count()
+        if owners_count <= 1:
+            raise PermissionError(
+                'Нельзя удалить последнего владельца. Сначала назначьте другого owner.'
+            )
+
+    target.delete()
+    chat.save(update_fields=['updated_at'])
+
+
+def update_group_title(chat, actor, title):
+    if chat.chat_type != ChatType.GROUP:
+        raise PermissionError('Название можно менять только у группы')
+    if not user_can_manage_group(chat, actor):
+        raise PermissionError('Недостаточно прав')
+
+    title = (title or '').strip()
+    if not title:
+        raise ValueError('Название группы обязательно')
+    if len(title) > GROUP_TITLE_MAX_LEN:
+        raise ValueError(f'Название не длиннее {GROUP_TITLE_MAX_LEN} символов')
+
+    chat.title = title
+    chat.save(update_fields=['title', 'updated_at'])
+    return chat
+
+
+def serialize_chat_member(participant, request=None):
+    from apps.users.serializers import UserSerializer
+
+    user_data = UserSerializer(participant.user, context={'request': request}).data
+    return {
+        'id': user_data['id'],
+        'nickname': user_data['nickname'],
+        'first_name': user_data['first_name'],
+        'last_name': user_data['last_name'],
+        'photo': user_data.get('photo') or '',
+        'photo_url': user_data.get('photo_url'),
+        'role': participant.role,
+        'is_online': user_data.get('is_online'),
+    }
+
+
+def serialize_chat_list_item(chat, user, request=None):
+    from apps.chats.serializers import MessageSerializer
+    from apps.users.serializers import UserSerializer
+
+    ctx = {'request': request}
+    is_group = chat.chat_type == ChatType.GROUP
+    participants = list(chat.participants.all())
+    last_message = get_last_visible_message(chat, user)
+    if is_group:
+        partner = None
+        members = [serialize_chat_member(p, request=request) for p in participants]
+    else:
+        partner = next((p.user for p in participants if p.user_id != user.id), None)
+        if partner is None:
+            partner = get_chat_partner(chat, user)
+        members = None
+
+    return {
+        'id': chat.id,
+        'chat_type': chat.chat_type,
+        'is_group': is_group,
+        'title': chat.title if is_group else None,
+        'partner': UserSerializer(partner, context=ctx).data if partner else None,
+        'members': members,
+        'members_count': len(participants),
+        'last_message': (
+            MessageSerializer(last_message, context=ctx).data if last_message else None
+        ),
+        'updated_at': chat.updated_at,
+        'background_url': get_participant_background_url(chat, user),
+    }
+
+
+def chats_with_participants_prefetch():
+    return Prefetch(
+        'participants',
+        queryset=ChatParticipant.objects.select_related('user').order_by('joined_at'),
+    )
 
 
 def get_visible_messages(chat, user):
@@ -208,7 +441,13 @@ def upload_chat_files(chat, user, uploaded_files):
 
 
 def get_participant_background_url(chat, user):
-    participant = chat.participants.filter(user=user).only('background').first()
+    # Не ходим через related manager после Prefetch(select_related='user'):
+    # .only('background') конфликтует с уже заданным select_related.
+    prefetched = getattr(chat, '_prefetched_objects_cache', {}).get('participants')
+    if prefetched is not None:
+        participant = next((p for p in prefetched if p.user_id == user.id), None)
+    else:
+        participant = ChatParticipant.objects.filter(chat_id=chat.id, user_id=user.id).first()
     if not participant or not participant.background:
         return None
     return get_presigned_url(participant.background)
