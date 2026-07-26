@@ -47,7 +47,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     # Optional — can be attached later in settings.
     email = models.EmailField(unique=True, null=True, blank=True)
-    # Required for new users; E.164 digits without '+'.
+    # Optional for now (registration uses email).
     phone = models.CharField(max_length=32, unique=True, null=True, blank=True)
     role = models.CharField(max_length=10, choices=UserRole.choices, default=UserRole.USER)
     first_name = models.CharField(max_length=150)

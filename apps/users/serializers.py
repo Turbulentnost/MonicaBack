@@ -1,33 +1,28 @@
 import json
+import random
 import re
 import secrets
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.core.mail import send_mail
 from rest_framework import serializers
 
-from apps.users.services.phone import normalize_phone
-from apps.users.services.telegram_auth import create_telegram_verification
+from apps.users.services.phone import format_phone_display
 
 User = get_user_model()
 
 NICKNAME_PATTERN = re.compile(r'^[a-zA-Z0-9_]{3,50}$')
 
 
-class PhoneSerializer(serializers.Serializer):
-    phone = serializers.CharField(max_length=32)
-
-    def validate_phone(self, value):
-        return normalize_phone(value)
+class EmailSerializer(serializers.Serializer):
+    email = serializers.EmailField()
 
 
 class VerifyCodeSerializer(serializers.Serializer):
-    phone = serializers.CharField(max_length=32)
+    email = serializers.EmailField()
     code = serializers.CharField(min_length=6, max_length=6)
-
-    def validate_phone(self, value):
-        return normalize_phone(value)
 
 
 class ProfileSerializer(serializers.Serializer):
@@ -61,7 +56,7 @@ class LoginSerializer(serializers.Serializer):
     def validate(self, attrs):
         identifier = (attrs.get('login') or attrs.get('email') or '').strip()
         if not identifier:
-            raise serializers.ValidationError({'login': 'Укажите телефон, никнейм или email'})
+            raise serializers.ValidationError({'login': 'Укажите email или никнейм'})
         attrs['login'] = identifier
         return attrs
 
@@ -144,28 +139,39 @@ class AccountUpdateSerializer(serializers.ModelSerializer):
         return value
 
 
-def _phone_code_key(phone):
-    return f'phone_code:{phone}'
+def _email_code_key(email):
+    return f'email_code:{email.lower()}'
 
 
 def _reg_session_key(token):
     return f'reg_session:{token}'
 
 
-def send_verification_code(phone):
-    """Start phone verification via Telegram bot deep link (or debug_code)."""
-    return create_telegram_verification(phone)
+def send_verification_code(email):
+    if User.objects.filter(email__iexact=email).exists():
+        raise serializers.ValidationError({'email': 'Пользователь с таким email уже существует'})
+
+    code = f'{random.randint(0, 999999):06d}'
+    cache.set(_email_code_key(email), code, settings.REGISTRATION_CODE_TTL)
+
+    send_mail(
+        subject='Monica — код подтверждения',
+        message=f'Ваш код подтверждения: {code}\nКод действителен 15 минут.',
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[email],
+        fail_silently=False,
+    )
+    return code
 
 
-def verify_code_and_create_session(phone, code):
-    phone = normalize_phone(phone)
-    stored = cache.get(_phone_code_key(phone))
+def verify_code_and_create_session(email, code):
+    stored = cache.get(_email_code_key(email))
     if not stored or stored != code:
         raise serializers.ValidationError({'code': 'Неверный или просроченный код'})
 
-    cache.delete(_phone_code_key(phone))
+    cache.delete(_email_code_key(email))
     token = secrets.token_urlsafe(32)
-    session_data = {'phone': phone, 'step': 'profile'}
+    session_data = {'email': email.lower(), 'step': 'profile'}
     cache.set(_reg_session_key(token), json.dumps(session_data), settings.REGISTRATION_SESSION_TTL)
     return token
 
@@ -192,15 +198,14 @@ def delete_registration_session(token):
 
 def complete_registration(token):
     session = get_registration_session(token)
-    required = ['phone', 'first_name', 'last_name', 'password', 'nickname']
+    required = ['email', 'first_name', 'last_name', 'password', 'nickname']
     for field in required:
         if not session.get(field):
             raise serializers.ValidationError(
                 {'registration_token': f'Не заполнено поле: {field}'}
             )
 
-    phone = session['phone']
-    if User.objects.filter(phone=phone).exists():
+    if User.objects.filter(email__iexact=session['email']).exists():
         raise serializers.ValidationError({'registration_token': 'Пользователь уже существует'})
     if User.objects.filter(nickname__iexact=session['nickname']).exists():
         raise serializers.ValidationError({'nickname': 'Никнейм уже занят'})
@@ -211,10 +216,10 @@ def complete_registration(token):
         birth_date = date.fromisoformat(birth_date)
 
     user = User.objects.create_user(
-        email=None,
+        email=session['email'],
         password=session['password'],
         nickname=session['nickname'],
-        phone=phone,
+        phone=None,
         first_name=session['first_name'],
         last_name=session['last_name'],
         city=session.get('city', ''),

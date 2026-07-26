@@ -1,13 +1,11 @@
 from django.contrib.auth.backends import ModelBackend
 from django.contrib.auth import get_user_model
 
-from apps.users.services.phone import looks_like_phone, normalize_phone
-
 User = get_user_model()
 
 
 class LoginBackend(ModelBackend):
-    """Authenticate by phone, nickname or email (+ password)."""
+    """Authenticate by email or nickname (+ password)."""
 
     def authenticate(self, request, username=None, password=None, login=None, **kwargs):
         identifier = login or username or kwargs.get('email')
@@ -22,17 +20,8 @@ class LoginBackend(ModelBackend):
         return None
 
     def _resolve_user(self, identifier: str):
-        if looks_like_phone(identifier):
-            try:
-                phone = normalize_phone(identifier)
-            except Exception:
-                return None
-            return User.objects.filter(phone=phone).first()
-
         if '@' in identifier:
             return User.objects.filter(email__iexact=identifier).first()
-
-        # Nickname (exact, case-insensitive)
         return User.objects.filter(nickname__iexact=identifier).first()
 
     def get_user(self, user_id):
