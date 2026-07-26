@@ -376,7 +376,8 @@ def upload_chat_file(chat, user, uploaded_file):
     content_type = (uploaded_file.content_type or '').strip() or 'application/octet-stream'
     ext = os.path.splitext(uploaded_file.name or '')[1].lower()
     image_exts = {'.jpg', '.jpeg', '.png', '.gif', '.webp'}
-    audio_exts = {'.m4a', '.aac', '.mp3', '.ogg', '.opus', '.webm'}
+    audio_exts = {'.m4a', '.aac', '.mp3', '.ogg', '.opus'}
+    video_exts = {'.mp4', '.webm', '.mov', '.mkv', '.m4v', '.avi', '.ogv', '.3gp'}
 
     # Normalize common MIME guesses when the browser sends octet-stream / empty.
     if ext in image_exts and content_type not in ALLOWED_IMAGE_TYPES:
@@ -387,6 +388,17 @@ def upload_chat_file(chat, user, uploaded_file):
             '.gif': 'image/gif',
             '.webp': 'image/webp',
         }.get(ext, 'image/jpeg')
+    elif ext in video_exts and not content_type.startswith('video/'):
+        content_type = {
+            '.mp4': 'video/mp4',
+            '.webm': 'video/webm',
+            '.mov': 'video/quicktime',
+            '.mkv': 'video/x-matroska',
+            '.m4v': 'video/mp4',
+            '.avi': 'video/x-msvideo',
+            '.ogv': 'video/ogg',
+            '.3gp': 'video/3gpp',
+        }.get(ext, 'video/mp4')
     elif ext == '.py':
         content_type = 'text/x-python'
     elif ext == '.js':
@@ -398,7 +410,11 @@ def upload_chat_file(chat, user, uploaded_file):
         content_type = 'application/octet-stream'
 
     is_image = content_type in ALLOWED_IMAGE_TYPES or ext in image_exts
-    is_audio = content_type.startswith('audio/') or ext in audio_exts
+    is_video = content_type.startswith('video/') or ext in video_exts
+    is_audio = (
+        not is_video
+        and (content_type.startswith('audio/') or ext in audio_exts)
+    )
     max_bytes = (
         settings.CHAT_IMAGE_MAX_SIZE_MB if is_image else settings.CHAT_FILE_MAX_SIZE_MB
     ) * 1024 * 1024
