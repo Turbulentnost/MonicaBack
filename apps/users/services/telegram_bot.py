@@ -94,16 +94,3 @@ def delete_webhook() -> dict:
     return _api('deleteWebhook', {'drop_pending_updates': True})
 
 
-def contact_share_keyboard() -> dict:
-    return {
-        'keyboard': [[{
-            'text': 'Подтвердить номер телефона',
-            'request_contact': True,
-        }]],
-        'resize_keyboard': True,
-        'one_time_keyboard': True,
-    }
-
-
-def remove_keyboard() -> dict:
-    return {'remove_keyboard': True}

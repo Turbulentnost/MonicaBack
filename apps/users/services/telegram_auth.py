@@ -1,4 +1,10 @@
-"""Registration OTP delivery through Telegram bot deep links."""
+"""Registration OTP delivery through Telegram bot deep links.
+
+Flow:
+1. Site creates a one-time start token bound to {phone, code}.
+2. User opens https://t.me/<bot>?start=<token>
+3. Bot receives /start <token>, loads that phone/code, sends the code.
+"""
 
 from __future__ import annotations
 
@@ -16,9 +22,7 @@ from apps.users.services.phone import format_phone_display, normalize_phone
 from apps.users.services.telegram_bot import (
     TelegramBotError,
     bot_username,
-    contact_share_keyboard,
     deep_link,
-    remove_keyboard,
     send_message,
     telegram_configured,
 )
@@ -35,15 +39,8 @@ def _start_token_key(token: str) -> str:
     return f'tg_reg_start:{token}'
 
 
-def _chat_pending_key(chat_id: int | str) -> str:
-    return f'tg_reg_chat:{chat_id}'
-
-
 def create_telegram_verification(phone: str) -> dict:
-    """
-    Create OTP + deep-link session. Code is sent only after the user opens
-    the bot and confirms the phone via Telegram contact share.
-    """
+    """Create OTP + unique deep link bound to this phone number."""
     phone = normalize_phone(phone)
     if User.objects.filter(phone=phone).exists():
         raise serializers.ValidationError({'phone': 'Пользователь с таким номером уже существует'})
@@ -80,19 +77,10 @@ def create_telegram_verification(phone: str) -> dict:
         'bot_username': bot_username(),
         'channel': 'telegram',
         'detail': (
-            f'Откройте Telegram и подтвердите номер '
-            f'{format_phone_display(phone)} — бот пришлёт код.'
+            f'Откройте Telegram по кнопке ниже — бот пришлёт код '
+            f'для {format_phone_display(phone)}.'
         ),
     }
-
-
-def _send_code_to_chat(chat_id: int | str, phone: str, code: str) -> None:
-    text = (
-        f'Код подтверждения Monica для {format_phone_display(phone)}:\n\n'
-        f'{code}\n\n'
-        f'Код действует 15 минут. Вернитесь на сайт и введите его.'
-    )
-    send_message(chat_id, text, reply_markup=remove_keyboard())
 
 
 def handle_telegram_update(update: dict) -> None:
@@ -103,17 +91,17 @@ def handle_telegram_update(update: dict) -> None:
         return
 
     text = (message.get('text') or '').strip()
-    contact = message.get('contact')
-
-    if text.startswith('/start'):
-        parts = text.split(maxsplit=1)
-        start_token = parts[1].strip() if len(parts) > 1 else ''
-        _handle_start(chat_id, start_token)
+    if not text.startswith('/start'):
+        send_message(
+            chat_id,
+            'Чтобы получить код, начните регистрацию на сайте Monica '
+            'и нажмите «Перейти в Telegram».',
+        )
         return
 
-    if contact:
-        _handle_contact(chat_id, contact, message.get('from') or {})
-        return
+    parts = text.split(maxsplit=1)
+    start_token = parts[1].strip() if len(parts) > 1 else ''
+    _handle_start(chat_id, start_token)
 
 
 def _handle_start(chat_id: int | str, start_token: str) -> None:
@@ -121,7 +109,7 @@ def _handle_start(chat_id: int | str, start_token: str) -> None:
         send_message(
             chat_id,
             'Чтобы получить код, начните регистрацию на сайте Monica '
-            'и нажмите «Перейти в Telegram».',
+            'и нажмите «Перейти в Telegram» — ссылка привязана к вашему номеру.',
         )
         return
 
@@ -135,79 +123,30 @@ def _handle_start(chat_id: int | str, start_token: str) -> None:
 
     data = json.loads(raw)
     phone = data['phone']
-    cache.set(
-        _chat_pending_key(chat_id),
-        json.dumps({'phone': phone, 'code': data['code'], 'start_token': start_token}),
-        settings.REGISTRATION_CODE_TTL,
-    )
+    code = data['code']
 
-    send_message(
-        chat_id,
-        (
-            f'Регистрация в Monica\n\n'
-            f'Номер с сайта: {format_phone_display(phone)}\n\n'
-            f'Нажмите кнопку ниже, чтобы подтвердить, что это ваш номер в Telegram. '
-            f'После этого бот сразу пришлёт код.'
-        ),
-        reply_markup=contact_share_keyboard(),
-    )
-
-
-def _handle_contact(chat_id: int | str, contact: dict, from_user: dict) -> None:
-    pending_raw = cache.get(_chat_pending_key(chat_id))
-    if not pending_raw:
-        send_message(
-            chat_id,
-            'Сессия не найдена. Вернитесь на сайт Monica и снова нажмите «Перейти в Telegram».',
-            reply_markup=remove_keyboard(),
-        )
-        return
-
-    # Contact must belong to the user who pressed the button (anti-spoof).
-    user_id = from_user.get('id')
-    contact_user_id = contact.get('user_id')
-    if user_id and contact_user_id and int(contact_user_id) != int(user_id):
-        send_message(
-            chat_id,
-            'Нужно отправить именно свой номер (кнопка «Подтвердить номер телефона»).',
-            reply_markup=contact_share_keyboard(),
-        )
-        return
+    # One-time: this deep link is bound to exactly one phone/code pair.
+    cache.delete(_start_token_key(start_token))
 
     try:
-        shared_phone = normalize_phone(contact.get('phone_number') or '')
-    except serializers.ValidationError:
-        shared_phone = ''
-
-    pending = json.loads(pending_raw)
-    expected = pending['phone']
-
-    if not shared_phone or shared_phone != expected:
         send_message(
             chat_id,
             (
-                f'Номер в Telegram ({format_phone_display(shared_phone) or "не распознан"}) '
-                f'не совпадает с номером с сайта ({format_phone_display(expected)}).\n\n'
-                f'Вернитесь на сайт и укажите тот же номер, что привязан к Telegram, '
-                f'либо используйте другой аккаунт Telegram.'
+                f'Вы перешли по ссылке регистрации Monica.\n'
+                f'Код для номера {format_phone_display(phone)}:\n\n'
+                f'{code}\n\n'
+                f'Код действует 15 минут. Вернитесь на сайт и введите его.'
             ),
-            reply_markup=remove_keyboard(),
         )
-        return
-
-    code = pending['code']
-    # Keep OTP in phone_code cache; drop one-time start/chat bindings.
-    start_token = pending.get('start_token')
-    if start_token:
-        cache.delete(_start_token_key(start_token))
-    cache.delete(_chat_pending_key(chat_id))
-
-    try:
-        _send_code_to_chat(chat_id, expected, code)
     except TelegramBotError:
-        logger.exception('Failed to send OTP to chat %s', chat_id)
+        logger.exception('Failed to send OTP to chat %s for phone %s', chat_id, phone)
+        # Restore token so user can retry the same link once after a transient error.
+        cache.set(
+            _start_token_key(start_token),
+            json.dumps({'phone': phone, 'code': code}),
+            settings.REGISTRATION_CODE_TTL,
+        )
         send_message(
             chat_id,
-            'Не удалось отправить код. Попробуйте ещё раз с сайта.',
-            reply_markup=remove_keyboard(),
+            'Не удалось отправить код. Откройте ссылку с сайта ещё раз.',
         )

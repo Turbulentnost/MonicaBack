@@ -68,7 +68,7 @@ class RegisterPhoneView(APIView):
 
 
 class TelegramWebhookView(APIView):
-    """Telegram Bot webhook — OTP after /start + contact confirm."""
+    """Telegram Bot webhook — OTP from deep-link /start=<token> bound to phone."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
