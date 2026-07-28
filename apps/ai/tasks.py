@@ -8,18 +8,26 @@ logger = logging.getLogger(__name__)
 
 @shared_task
 def update_user_style(user_id: str, message_id: str):
-    """Append outgoing text sample and occasionally refresh style traits."""
+    """
+    After each own text message:
+    - append global style sample
+    - continuously adapt partner-specific style for this chat
+    """
     if not getattr(settings, 'AI_COMPLETION_ENABLED', False):
         return {'ok': False, 'reason': 'disabled'}
 
     from apps.ai.models import UserStyleProfile
-    from apps.ai.services import append_style_sample, maybe_refresh_traits
+    from apps.ai.services import (
+        append_style_sample,
+        maybe_refresh_partner_style,
+        maybe_refresh_traits,
+    )
     from apps.chats.models import Message, MessageType
     from django.contrib.auth import get_user_model
 
     User = get_user_model()
     try:
-        message = Message.objects.select_related('sender').get(id=message_id)
+        message = Message.objects.select_related('sender', 'chat').get(id=message_id)
     except (Message.DoesNotExist, ValueError, TypeError):
         return {'ok': False, 'reason': 'message_missing'}
 
@@ -36,25 +44,30 @@ def update_user_style(user_id: str, message_id: str):
         return {'ok': False, 'reason': 'user_missing'}
 
     profile = append_style_sample(user, message.content or '')
-    if profile is None:
-        return {'ok': True, 'sampled': False}
-
+    partner_result = {'ok': False}
     try:
-        maybe_refresh_traits(profile)
+        partner_result = maybe_refresh_partner_style(user, message.chat, force=False)
     except Exception:
-        logger.exception('traits refresh error user=%s', user_id)
+        logger.exception('partner style refresh error user=%s msg=%s', user_id, message_id)
 
-    fresh = UserStyleProfile.objects.filter(pk=profile.pk).first()
+    if profile is not None:
+        try:
+            maybe_refresh_traits(profile)
+        except Exception:
+            logger.exception('traits refresh error user=%s', user_id)
+
+    fresh = UserStyleProfile.objects.filter(user_id=user_id).first()
     return {
         'ok': True,
-        'sampled': True,
+        'sampled': profile is not None,
         'samples_count': len(fresh.samples) if fresh and isinstance(fresh.samples, list) else 0,
+        'partner_style': partner_result,
     }
 
 
 @shared_task
 def analyze_day_partner_styles(user_id: str):
-    """After user goes offline — extract per-partner communication traits for today."""
+    """After user goes offline — force-refresh per-partner styles for today."""
     if not getattr(settings, 'AI_COMPLETION_ENABLED', False):
         return {'ok': False, 'reason': 'disabled'}
     from apps.ai.services import analyze_user_day_partner_styles

@@ -404,45 +404,63 @@ def _parse_style_payload(raw: str) -> tuple[dict, str]:
     return traits, notes
 
 
-def analyze_partner_day_style(user, partner, chat, day_key: str | None = None) -> PartnerStyleProfile | None:
-    """Ask LLM to extract how `user` talks specifically with `partner` today."""
+def load_partner_transcript(user, partner, chat, *, limit: int = MAX_DAY_MESSAGES):
+    """Recent text exchange between user and partner (prefer today, fall back to latest)."""
     from apps.chats.models import Message, MessageType
 
-    start, end, today_key = _local_day_bounds()
+    start, end, day_key = _local_day_bounds()
+    base = Message.objects.filter(
+        chat=chat,
+        deleted_at__isnull=True,
+        message_type=MessageType.TEXT,
+    ).filter(Q(sender=user) | Q(sender=partner)).select_related('sender')
+
+    today_qs = base.filter(sent_at__gte=start, sent_at__lt=end).order_by('sent_at')
+    messages = list(today_qs[:limit])
+    if len(messages) < 4:
+        # Not enough today — take a rolling recent window so style keeps adapting.
+        messages = list(base.order_by('-sent_at')[:limit])
+        messages.reverse()
+    return messages, day_key
+
+
+def analyze_partner_day_style(user, partner, chat, day_key: str | None = None) -> PartnerStyleProfile | None:
+    """Adapt partner-specific style from the latest real conversation."""
+    messages, today_key = load_partner_transcript(user, partner, chat)
     day_key = day_key or today_key
 
-    qs = (
-        Message.objects.filter(
-            chat=chat,
-            deleted_at__isnull=True,
-            message_type=MessageType.TEXT,
-            sent_at__gte=start,
-            sent_at__lt=end,
-        )
-        .filter(Q(sender=user) | Q(sender=partner))
-        .select_related('sender')
-        .order_by('sent_at')
-    )
-    messages = list(qs[:MAX_DAY_MESSAGES])
-    # Need enough of the user's own lines
     own_count = sum(1 for m in messages if m.sender_id == user.id)
-    if own_count < 2:
+    if own_count < 1 or len(messages) < 2:
         return None
 
     transcript = format_day_transcript(messages, user.id)
     if not transcript.strip():
         return None
 
+    existing = PartnerStyleProfile.objects.filter(user=user, partner=partner).first()
+    prev_notes = (existing.notes or '').strip() if existing else ''
+    prev_traits = existing.traits if existing and isinstance(existing.traits, dict) else {}
+
     my_name = getattr(user, 'nickname', None) or 'user'
     partner_name = getattr(partner, 'nickname', None) or 'partner'
+    if prev_notes:
+        prev_block = prev_notes
+    elif prev_traits:
+        prev_block = json.dumps(prev_traits, ensure_ascii=False)
+    else:
+        prev_block = 'пока нет'
+
     prompt_messages = [
         {
             'role': 'system',
             'content': (
-                'Проанализируй переписку и опиши, как пользователь общается ИМЕННО с этим собеседником. '
+                'Ты обновляешь профиль стиля общения пользователя с КОНКРЕТНЫМ собеседником. '
+                'Опирайся на реальную переписку: как пользователь пишет именно этому человеку '
+                '(тон, ты/вы, сленг, длина фраз, emoji, шутки, формальность). '
+                'Если есть предыдущий профиль — адаптируй его под свежие сообщения, не игнорируй недавние изменения. '
                 'Ответь одним JSON без markdown со ключами: '
                 'tone, formality, emoji, length, notes, summary. '
-                'summary — 1–3 предложения на русском про особенности общения с этим человеком.'
+                'summary — 1–3 предложения на русском про актуальные особенности общения с этим человеком.'
             ),
         },
         {
@@ -450,13 +468,14 @@ def analyze_partner_day_style(user, partner, chat, day_key: str | None = None) -
             'content': (
                 f'Пользователь: @{my_name}\n'
                 f'Собеседник: @{partner_name}\n'
-                f'Переписка за {day_key} (метка «Я» = сообщения пользователя):\n'
+                f'Предыдущий профиль стиля с этим собеседником:\n{prev_block}\n\n'
+                f'Актуальная переписка (метка «Я» = сообщения пользователя):\n'
                 f'{transcript}'
             ),
         },
     ]
     try:
-        raw = chat_completion(prompt_messages, max_tokens=350, temperature=0.3, timeout=45)
+        raw = chat_completion(prompt_messages, max_tokens=350, temperature=0.35, timeout=45)
     except Exception:
         logger.exception(
             'partner style analyze failed user=%s partner=%s',
@@ -477,13 +496,55 @@ def analyze_partner_day_style(user, partner, chat, day_key: str | None = None) -
             'notes': notes,
             'traits': traits,
             'last_day_key': day_key,
+            'messages_since_refresh': 0,
         },
     )
     return profile
 
 
+def maybe_refresh_partner_style(user, chat, *, force: bool = False) -> dict:
+    """Continuously adapt partner style as the user actually chats."""
+    from apps.chats.models import ChatType
+
+    if not chat or getattr(chat, 'chat_type', None) != ChatType.DIRECT:
+        return {'ok': False, 'reason': 'not_direct'}
+
+    partner = get_partner_for_chat(chat, user)
+    if not partner:
+        return {'ok': False, 'reason': 'no_partner'}
+
+    profile, _ = PartnerStyleProfile.objects.get_or_create(
+        user=user,
+        partner=partner,
+        defaults={'chat': chat},
+    )
+    if profile.chat_id != chat.id:
+        profile.chat = chat
+        profile.save(update_fields=['chat', 'updated_at'])
+
+    profile.messages_since_refresh = int(profile.messages_since_refresh or 0) + 1
+    profile.save(update_fields=['messages_since_refresh', 'updated_at'])
+
+    every_n = max(1, int(getattr(settings, 'AI_PARTNER_STYLE_EVERY_N', 2)))
+    debounce = max(15, int(getattr(settings, 'AI_PARTNER_STYLE_DEBOUNCE_SEC', 45)))
+    debounce_key = f'ai:partner_refresh:{user.id}:{partner.id}'
+
+    needs_refresh = force or not (profile.notes or '').strip() or profile.messages_since_refresh >= every_n
+    if not needs_refresh:
+        return {'ok': True, 'refreshed': False, 'reason': 'counter'}
+
+    if not force and cache.get(debounce_key):
+        return {'ok': True, 'refreshed': False, 'reason': 'debounce'}
+
+    result = analyze_partner_day_style(user, partner, chat)
+    if result:
+        cache.set(debounce_key, 1, timeout=debounce)
+        return {'ok': True, 'refreshed': True}
+    return {'ok': False, 'refreshed': False, 'reason': 'analyze_failed'}
+
+
 def analyze_user_day_partner_styles(user_id: str) -> dict:
-    """On logout/offline: refresh partner-specific style notes for today's DMs."""
+    """Offline / sweep: force-refresh partner styles for today's active DMs."""
     from apps.chats.models import Chat, ChatType, Message, MessageType
     from django.contrib.auth import get_user_model
 
@@ -509,18 +570,8 @@ def analyze_user_day_partner_styles(user_id: str) -> dict:
     updated = 0
     skipped = 0
     for chat in Chat.objects.filter(id__in=chat_ids, chat_type=ChatType.DIRECT).distinct():
-        partner = get_partner_for_chat(chat, user)
-        if not partner:
-            skipped += 1
-            continue
-        # Debounce duplicate same-day jobs lightly via cache, but still refresh notes.
-        cache_key = f'ai:partner_day:{user.id}:{partner.id}:{day_key}'
-        if cache.get(cache_key):
-            skipped += 1
-            continue
-        result = analyze_partner_day_style(user, partner, chat, day_key=day_key)
-        if result:
-            cache.set(cache_key, 1, timeout=20 * 60)
+        result = maybe_refresh_partner_style(user, chat, force=True)
+        if result.get('refreshed'):
             updated += 1
         else:
             skipped += 1

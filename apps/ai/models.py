@@ -45,6 +45,7 @@ class PartnerStyleProfile(models.Model):
     )
     notes = models.TextField(blank=True, default='')
     traits = models.JSONField(default=dict, blank=True)
+    messages_since_refresh = models.PositiveIntegerField(default=0)
     last_day_key = models.CharField(max_length=10, blank=True, default='')
     updated_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
