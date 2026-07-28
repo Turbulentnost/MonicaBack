@@ -98,12 +98,37 @@ def get_or_create_direct_chat(user_a, user_b):
     return chat, True
 
 
+def get_or_create_favorites_chat(user):
+    """Personal Saved Messages / Избранное — solo chat owned by the user."""
+    existing = (
+        Chat.objects.filter(chat_type=ChatType.FAVORITES)
+        .filter(participants__user=user)
+        .distinct()
+        .first()
+    )
+    if existing:
+        return existing, False
+
+    chat = Chat.objects.create(
+        chat_type=ChatType.FAVORITES,
+        title='Избранное',
+        created_by=user,
+    )
+    ChatParticipant.objects.create(
+        chat=chat,
+        user=user,
+        role=ChatParticipantRole.OWNER,
+    )
+    return chat, True
+
+
 def get_user_chats(user):
     return Chat.objects.filter(participants__user=user).distinct()
 
 
 def get_chat_partner(chat, user):
-    if getattr(chat, 'chat_type', ChatType.DIRECT) == ChatType.GROUP:
+    chat_type = getattr(chat, 'chat_type', ChatType.DIRECT)
+    if chat_type in {ChatType.GROUP, ChatType.FAVORITES}:
         return None
     participant = chat.participants.exclude(user=user).select_related('user').first()
     return participant.user if participant else None
@@ -343,23 +368,31 @@ def serialize_chat_list_item(chat, user, request=None):
 
     ctx = {'request': request}
     is_group = chat.chat_type == ChatType.GROUP
+    is_favorites = chat.chat_type == ChatType.FAVORITES
     participants = list(chat.participants.all())
     last_message = get_last_visible_message(chat, user)
-    if is_group:
+    if is_favorites:
+        partner = user
+        members = [serialize_chat_member(p, request=request) for p in participants]
+        title = chat.title or 'Избранное'
+    elif is_group:
         partner = None
         members = [serialize_chat_member(p, request=request) for p in participants]
+        title = chat.title
     else:
         partner = next((p.user for p in participants if p.user_id != user.id), None)
         if partner is None:
             partner = get_chat_partner(chat, user)
         members = None
+        title = None
 
     photo = (chat.photo or '') if is_group else ''
     return {
         'id': chat.id,
         'chat_type': chat.chat_type,
         'is_group': is_group,
-        'title': chat.title if is_group else None,
+        'is_favorites': is_favorites,
+        'title': title,
         'photo': photo or None,
         'photo_url': get_presigned_url(photo) if photo else None,
         'partner': UserSerializer(partner, context=ctx).data if partner else None,

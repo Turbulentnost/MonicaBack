@@ -24,6 +24,7 @@ from apps.chats.services import (
     delete_message_for_user,
     get_chat_history_cache_version,
     get_or_create_direct_chat,
+    get_or_create_favorites_chat,
     get_participant_background_url,
     get_user_chats,
     get_visible_messages,
@@ -54,7 +55,15 @@ class StartChatView(APIView):
         except User.DoesNotExist:
             return Response({'detail': 'Пользователь не найден'}, status=404)
 
-        chat, _ = get_or_create_direct_chat(request.user, recipient)
+        # Self-chat → Избранное (Saved Messages).
+        if recipient.id == request.user.id:
+            chat, created = get_or_create_favorites_chat(request.user)
+        else:
+            try:
+                chat, created = get_or_create_direct_chat(request.user, recipient)
+            except ValueError as exc:
+                return Response({'detail': str(exc)}, status=400)
+
         chat = (
             get_user_chats(request.user)
             .prefetch_related(chats_with_participants_prefetch())
@@ -62,7 +71,31 @@ class StartChatView(APIView):
         )
         return Response(
             serialize_chat_list_item(chat, request.user, request=request),
-            status=status.HTTP_200_OK,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class FavoritesChatView(APIView):
+    """GET/POST — получить или создать чат «Избранное»."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return self._respond(request)
+
+    def post(self, request):
+        return self._respond(request)
+
+    def _respond(self, request):
+        chat, created = get_or_create_favorites_chat(request.user)
+        chat = (
+            get_user_chats(request.user)
+            .prefetch_related(chats_with_participants_prefetch())
+            .get(id=chat.id)
+        )
+        return Response(
+            serialize_chat_list_item(chat, request.user, request=request),
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
 
 

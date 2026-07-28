@@ -128,8 +128,9 @@ class MessageSerializer(serializers.ModelSerializer):
 
 class ChatListSerializer(serializers.Serializer):
     id = serializers.UUIDField()
-    chat_type = serializers.ChoiceField(choices=['direct', 'group'])
+    chat_type = serializers.ChoiceField(choices=['direct', 'group', 'favorites'])
     is_group = serializers.BooleanField()
+    is_favorites = serializers.BooleanField(required=False)
     title = serializers.CharField(allow_null=True, allow_blank=True)
     photo = serializers.CharField(allow_null=True, required=False)
     photo_url = serializers.CharField(allow_null=True, required=False)

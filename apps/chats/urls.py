@@ -13,6 +13,7 @@ from apps.chats.views import (
     ChatMessagesView,
     ChatMessageUploadView,
     CreateGroupChatView,
+    FavoritesChatView,
     MediaProxyView,
     StartChatView,
     UserSearchView,
@@ -40,6 +41,7 @@ from apps.users.views import UserAvatarView
 urlpatterns = [
     path('chats/', ChatListView.as_view()),
     path('chats/start/', StartChatView.as_view()),
+    path('chats/favorites/', FavoritesChatView.as_view()),
     path('chats/groups/', CreateGroupChatView.as_view()),
     path('chats/<uuid:chat_id>/', ChatDetailView.as_view()),
     path('chats/<uuid:chat_id>/members/', ChatMembersView.as_view()),

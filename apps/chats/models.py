@@ -17,6 +17,7 @@ class MessageType(models.TextChoices):
 class ChatType(models.TextChoices):
     DIRECT = 'direct', 'Личный'
     GROUP = 'group', 'Группа'
+    FAVORITES = 'favorites', 'Избранное'
 
 
 class ChatParticipantRole(models.TextChoices):
@@ -50,13 +51,17 @@ class Chat(models.Model):
         ordering = ['-updated_at']
 
     def __str__(self):
-        if self.chat_type == ChatType.GROUP and self.title:
+        if self.chat_type in {ChatType.GROUP, ChatType.FAVORITES} and self.title:
             return f'{self.title} ({self.id})'
         return str(self.id)
 
     @property
     def is_group(self):
         return self.chat_type == ChatType.GROUP
+
+    @property
+    def is_favorites(self):
+        return self.chat_type == ChatType.FAVORITES
 
 
 class ChatParticipant(models.Model):
