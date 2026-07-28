@@ -502,49 +502,8 @@ def analyze_partner_day_style(user, partner, chat, day_key: str | None = None) -
     return profile
 
 
-def maybe_refresh_partner_style(user, chat, *, force: bool = False) -> dict:
-    """Continuously adapt partner style as the user actually chats."""
-    from apps.chats.models import ChatType
-
-    if not chat or getattr(chat, 'chat_type', None) != ChatType.DIRECT:
-        return {'ok': False, 'reason': 'not_direct'}
-
-    partner = get_partner_for_chat(chat, user)
-    if not partner:
-        return {'ok': False, 'reason': 'no_partner'}
-
-    profile, _ = PartnerStyleProfile.objects.get_or_create(
-        user=user,
-        partner=partner,
-        defaults={'chat': chat},
-    )
-    if profile.chat_id != chat.id:
-        profile.chat = chat
-        profile.save(update_fields=['chat', 'updated_at'])
-
-    profile.messages_since_refresh = int(profile.messages_since_refresh or 0) + 1
-    profile.save(update_fields=['messages_since_refresh', 'updated_at'])
-
-    every_n = max(1, int(getattr(settings, 'AI_PARTNER_STYLE_EVERY_N', 2)))
-    debounce = max(15, int(getattr(settings, 'AI_PARTNER_STYLE_DEBOUNCE_SEC', 45)))
-    debounce_key = f'ai:partner_refresh:{user.id}:{partner.id}'
-
-    needs_refresh = force or not (profile.notes or '').strip() or profile.messages_since_refresh >= every_n
-    if not needs_refresh:
-        return {'ok': True, 'refreshed': False, 'reason': 'counter'}
-
-    if not force and cache.get(debounce_key):
-        return {'ok': True, 'refreshed': False, 'reason': 'debounce'}
-
-    result = analyze_partner_day_style(user, partner, chat)
-    if result:
-        cache.set(debounce_key, 1, timeout=debounce)
-        return {'ok': True, 'refreshed': True}
-    return {'ok': False, 'refreshed': False, 'reason': 'analyze_failed'}
-
-
 def analyze_user_day_partner_styles(user_id: str) -> dict:
-    """Offline / sweep: force-refresh partner styles for today's active DMs."""
+    """Offline: refresh partner-specific style notes for today's active DMs."""
     from apps.chats.models import Chat, ChatType, Message, MessageType
     from django.contrib.auth import get_user_model
 
@@ -570,8 +529,12 @@ def analyze_user_day_partner_styles(user_id: str) -> dict:
     updated = 0
     skipped = 0
     for chat in Chat.objects.filter(id__in=chat_ids, chat_type=ChatType.DIRECT).distinct():
-        result = maybe_refresh_partner_style(user, chat, force=True)
-        if result.get('refreshed'):
+        partner = get_partner_for_chat(chat, user)
+        if not partner:
+            skipped += 1
+            continue
+        result = analyze_partner_day_style(user, partner, chat, day_key=day_key)
+        if result:
             updated += 1
         else:
             skipped += 1
