@@ -56,11 +56,14 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         elif action == 'messages.read':
             await self._mark_read(content.get('message_ids'))
         elif action == 'typing.start':
-            await self._broadcast_typing(True)
+            activity = content.get('activity') or 'typing'
+            if activity not in ('typing', 'recording'):
+                activity = 'typing'
+            await self._broadcast_typing(True, activity)
         elif action == 'typing.stop':
             await self._broadcast_typing(False)
 
-    async def _broadcast_typing(self, is_typing):
+    async def _broadcast_typing(self, is_typing, activity='typing'):
         if not hasattr(self, 'room_group_name'):
             return
         await self.channel_layer.group_send(
@@ -70,6 +73,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                 'user_id': str(self.user.id),
                 'nickname': self.user.nickname,
                 'is_typing': is_typing,
+                'activity': activity if is_typing else '',
             },
         )
 
@@ -209,6 +213,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             'user_id': event['user_id'],
             'nickname': event['nickname'],
             'is_typing': event['is_typing'],
+            'activity': event.get('activity') or 'typing',
         })
 
     @database_sync_to_async
