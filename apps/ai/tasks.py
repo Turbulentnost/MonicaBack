@@ -50,3 +50,17 @@ def update_user_style(user_id: str, message_id: str):
         'sampled': True,
         'samples_count': len(fresh.samples) if fresh and isinstance(fresh.samples, list) else 0,
     }
+
+
+@shared_task
+def analyze_day_partner_styles(user_id: str):
+    """After user goes offline — extract per-partner communication traits for today."""
+    if not getattr(settings, 'AI_COMPLETION_ENABLED', False):
+        return {'ok': False, 'reason': 'disabled'}
+    from apps.ai.services import analyze_user_day_partner_styles
+
+    try:
+        return analyze_user_day_partner_styles(user_id)
+    except Exception:
+        logger.exception('analyze_day_partner_styles failed user=%s', user_id)
+        return {'ok': False, 'reason': 'exception'}

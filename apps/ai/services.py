@@ -1,13 +1,18 @@
 import hashlib
+import json
 import logging
 import re
+from datetime import datetime, time, timedelta
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.core.cache import cache
+from django.db.models import Q
+from django.utils import timezone
 
 from apps.ai.client import chat_completion
-from apps.ai.models import UserStyleProfile
+from apps.ai.models import PartnerStyleProfile, UserStyleProfile
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +20,8 @@ MAX_SAMPLES = 80
 SAMPLE_MAX_LEN = 280
 MIN_SAMPLE_LEN = 12
 TRAITS_EVERY_N = 25
+MAX_DAY_MESSAGES = 60
+MAX_DAY_CHARS = 4500
 
 
 def get_or_create_style_profile(user) -> UserStyleProfile:
@@ -34,7 +41,6 @@ def is_usable_sample(text: str) -> bool:
     text = normalize_sample(text)
     if len(text) < MIN_SAMPLE_LEN:
         return False
-    # Skip code-like / sticker payloads / storage paths
     if text.startswith('monica-sticker'):
         return False
     if re.match(r'^https?://', text, re.I):
@@ -72,7 +78,7 @@ def select_style_samples(profile: UserStyleProfile, draft: str, limit: int = 16)
 
     scored: list[tuple[int, int, str]] = []
     for index, sample in enumerate(samples):
-        score = index  # prefer recent (higher index)
+        score = index
         sample_l = sample.lower()
         if prefix and prefix in sample_l:
             score += 50
@@ -90,7 +96,7 @@ def select_style_samples(profile: UserStyleProfile, draft: str, limit: int = 16)
         picked.append(sample)
         if len(picked) >= limit:
             break
-    return list(reversed(picked))  # chronological-ish for prompt
+    return list(reversed(picked))
 
 
 def _rate_limit_ok(user_id) -> bool:
@@ -109,8 +115,8 @@ def _rate_limit_ok(user_id) -> bool:
     return True
 
 
-def _cache_key(user_id, draft: str) -> str:
-    digest = hashlib.sha256(f'{user_id}:{draft}'.encode('utf-8')).hexdigest()[:32]
+def _cache_key(user_id, draft: str, chat_id: str | None) -> str:
+    digest = hashlib.sha256(f'{user_id}:{chat_id or ""}:{draft}'.encode('utf-8')).hexdigest()[:32]
     return f'ai:complete:{digest}'
 
 
@@ -119,7 +125,6 @@ def strip_draft_prefix(suggestion: str, draft: str) -> str:
     draft = draft or ''
     if not suggestion:
         return ''
-    # Model sometimes repeats the whole draft
     if suggestion.startswith(draft):
         suggestion = suggestion[len(draft):]
     draft_stripped = draft.rstrip()
@@ -128,8 +133,102 @@ def strip_draft_prefix(suggestion: str, draft: str) -> str:
     return suggestion.lstrip('\n')
 
 
-def build_completion_messages(draft: str, samples: list[str], traits: dict | None) -> list[dict[str, str]]:
+def _local_day_bounds(now=None):
+    tz_name = getattr(settings, 'TIME_ZONE', 'Europe/Moscow')
+    try:
+        tz = ZoneInfo(tz_name)
+    except Exception:
+        tz = timezone.get_current_timezone()
+    now = timezone.localtime(now or timezone.now(), tz)
+    start = datetime.combine(now.date(), time.min, tzinfo=tz)
+    end = start + timedelta(days=1)
+    return start, end, now.date().isoformat()
+
+
+def format_day_transcript(messages, current_user_id) -> str:
+    lines = []
+    total = 0
+    for msg in messages:
+        sender = msg.sender
+        mine = str(sender.id) == str(current_user_id)
+        label = 'Я' if mine else (f'@{sender.nickname}' if getattr(sender, 'nickname', None) else 'Собеседник')
+        text = normalize_sample(msg.content or '')
+        if not text:
+            continue
+        if msg.message_type != 'text':
+            continue
+        line = f'{label}: {text}'
+        if total + len(line) > MAX_DAY_CHARS:
+            break
+        lines.append(line)
+        total += len(line) + 1
+    return '\n'.join(lines)
+
+
+def load_today_messages(chat_id, user) -> tuple[list, str]:
+    from apps.chats.models import Message, MessageType
+    from apps.chats.services import user_in_chat
+    from apps.chats.models import Chat
+
+    if not chat_id:
+        return [], ''
+    try:
+        chat = Chat.objects.get(id=chat_id)
+    except (Chat.DoesNotExist, ValueError, TypeError):
+        return [], ''
+    if not user_in_chat(chat, user):
+        return [], ''
+
+    start, end, _ = _local_day_bounds()
+    qs = (
+        Message.objects.filter(
+            chat=chat,
+            deleted_at__isnull=True,
+            message_type=MessageType.TEXT,
+            sent_at__gte=start,
+            sent_at__lt=end,
+        )
+        .exclude(hidden_for__user=user)
+        .select_related('sender')
+        .order_by('sent_at')
+    )
+    messages = list(qs[:MAX_DAY_MESSAGES])
+    return messages, format_day_transcript(messages, user.id)
+
+
+def get_partner_for_chat(chat, user):
+    from apps.chats.models import ChatType
+
+    if chat.chat_type != ChatType.DIRECT:
+        return None
+    peer = (
+        chat.participants.exclude(user=user)
+        .select_related('user')
+        .first()
+    )
+    return peer.user if peer else None
+
+
+def get_partner_style(user, partner) -> PartnerStyleProfile | None:
+    if not partner:
+        return None
+    return (
+        PartnerStyleProfile.objects.filter(user=user, partner=partner)
+        .only('notes', 'traits', 'updated_at')
+        .first()
+    )
+
+
+def build_completion_messages(
+    draft: str,
+    samples: list[str],
+    traits: dict | None,
+    day_transcript: str = '',
+    partner_notes: str = '',
+    partner_traits: dict | None = None,
+) -> list[dict[str, str]]:
     traits = traits or {}
+    partner_traits = partner_traits or {}
     traits_bits = []
     for key in ('tone', 'formality', 'emoji', 'length', 'notes'):
         value = traits.get(key)
@@ -137,19 +236,33 @@ def build_completion_messages(draft: str, samples: list[str], traits: dict | Non
             traits_bits.append(f'{key}: {value}')
     traits_line = '; '.join(traits_bits) if traits_bits else 'недостаточно данных'
 
+    partner_bits = []
+    for key in ('tone', 'formality', 'emoji', 'length', 'notes'):
+        value = partner_traits.get(key)
+        if value:
+            partner_bits.append(f'{key}: {value}')
+    partner_line = '; '.join(partner_bits) if partner_bits else ''
+    if partner_notes:
+        partner_line = (partner_line + '; ' if partner_line else '') + partner_notes
+
     examples = '\n'.join(f'- {s}' for s in samples) if samples else '- (примеров пока нет)'
+    day_block = day_transcript.strip() or '(сообщений за сегодня пока нет)'
 
     system = (
         'Ты помощник автодополнения сообщений в мессенджере Monica. '
         'Продолжи черновик пользователя до конца фразы или короткого сообщения. '
-        'Пиши строго от лица пользователя, в его стиле общения. '
+        'Пиши строго от лица пользователя, в его стиле общения с этим собеседником. '
+        'Учитывай контекст переписки за сегодня. '
         'Верни ТОЛЬКО продолжение текста (суффикс), без кавычек, без пояснений, '
         'без повтора уже набранного черновика. '
-        'Не используй markdown. Язык — тот же, что в черновике (обычно русский).'
+        'Не используй markdown и не пиши теги thinking. '
+        'Язык — тот же, что в черновике (обычно русский).'
     )
     user = (
-        f'Стиль пользователя (признаки): {traits_line}\n'
-        f'Примеры его сообщений:\n{examples}\n\n'
+        f'Общий стиль пользователя: {traits_line}\n'
+        f'Особенности общения с этим собеседником: {partner_line or "пока нет"}\n'
+        f'Примеры сообщений пользователя:\n{examples}\n\n'
+        f'Переписка за сегодня:\n{day_block}\n\n'
         f'Черновик:\n{draft}\n\n'
         f'Продолжение:'
     )
@@ -160,7 +273,6 @@ def build_completion_messages(draft: str, samples: list[str], traits: dict | Non
 
 
 def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
-    del chat_id  # reserved for future reply-context
     request_id = str(uuid4())
     draft = (draft or '').rstrip()
 
@@ -178,7 +290,8 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
     if not _rate_limit_ok(user.id):
         return {'suggestion': '', 'request_id': request_id, 'rate_limited': True}
 
-    cached = cache.get(_cache_key(user.id, draft))
+    cache_key = _cache_key(user.id, draft, chat_id)
+    cached = cache.get(cache_key)
     if cached is not None:
         return {
             'suggestion': cached,
@@ -187,20 +300,46 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
         }
 
     samples = select_style_samples(profile, draft)
-    messages = build_completion_messages(draft, samples, profile.traits if isinstance(profile.traits, dict) else {})
+    _, day_transcript = load_today_messages(chat_id, user)
+
+    partner_notes = ''
+    partner_traits = {}
+    if chat_id:
+        from apps.chats.models import Chat
+        try:
+            chat = Chat.objects.get(id=chat_id)
+            partner = get_partner_for_chat(chat, user)
+            partner_style = get_partner_style(user, partner)
+            if partner_style:
+                partner_notes = (partner_style.notes or '').strip()
+                if isinstance(partner_style.traits, dict):
+                    partner_traits = partner_style.traits
+        except (Chat.DoesNotExist, ValueError, TypeError):
+            pass
+
+    messages = build_completion_messages(
+        draft,
+        samples,
+        profile.traits if isinstance(profile.traits, dict) else {},
+        day_transcript=day_transcript,
+        partner_notes=partner_notes,
+        partner_traits=partner_traits,
+    )
 
     try:
-        raw = chat_completion(messages)
-    except Exception:
+        raw = chat_completion(messages, max_tokens=max(int(settings.AI_MAX_TOKENS), 160))
+    except Exception as exc:
         logger.exception('AI complete failed for user=%s', user.id)
-        return {'suggestion': '', 'request_id': request_id, 'error': True}
+        detail = 'llm_unavailable' if 'unavailable' in str(exc).lower() else 'llm_error'
+        return {'suggestion': '', 'request_id': request_id, 'error': True, 'detail': detail}
 
     suggestion = strip_draft_prefix(raw, draft)
-    # Keep suggestion reasonably short for ghost text
     if len(suggestion) > 400:
         suggestion = suggestion[:400].rstrip()
 
-    cache.set(_cache_key(user.id, draft), suggestion, timeout=30)
+    # Never cache empty / failed answers — otherwise a downtime sticks for 30s.
+    if suggestion:
+        cache.set(cache_key, suggestion, timeout=30)
     return {'suggestion': suggestion, 'request_id': request_id}
 
 
@@ -223,15 +362,13 @@ def maybe_refresh_traits(profile: UserStyleProfile) -> None:
         {'role': 'user', 'content': f'Примеры:\n{examples}'},
     ]
     try:
-        raw = chat_completion(messages, max_tokens=200, temperature=0.3, timeout=20)
+        raw = chat_completion(messages, max_tokens=200, temperature=0.3, timeout=30)
     except Exception:
         logger.exception('traits refresh failed user=%s', profile.user_id)
         return
 
     traits = {}
     try:
-        import json
-        # Extract JSON object if model added noise
         match = re.search(r'\{[\s\S]*\}', raw)
         if match:
             traits = json.loads(match.group(0))
@@ -246,3 +383,146 @@ def maybe_refresh_traits(profile: UserStyleProfile) -> None:
         }
         profile.messages_since_traits = 0
         profile.save(update_fields=['traits', 'messages_since_traits', 'updated_at'])
+
+
+def _parse_style_payload(raw: str) -> tuple[dict, str]:
+    traits = {}
+    notes = ''
+    try:
+        match = re.search(r'\{[\s\S]*\}', raw or '')
+        if match:
+            data = json.loads(match.group(0))
+            if isinstance(data, dict):
+                for key in ('tone', 'formality', 'emoji', 'length', 'notes'):
+                    if data.get(key):
+                        traits[key] = str(data[key])[:200]
+                notes = str(data.get('summary') or data.get('notes') or '').strip()[:800]
+    except Exception:
+        notes = (raw or '').strip()[:800]
+    if not notes and traits.get('notes'):
+        notes = traits['notes']
+    return traits, notes
+
+
+def analyze_partner_day_style(user, partner, chat, day_key: str | None = None) -> PartnerStyleProfile | None:
+    """Ask LLM to extract how `user` talks specifically with `partner` today."""
+    from apps.chats.models import Message, MessageType
+
+    start, end, today_key = _local_day_bounds()
+    day_key = day_key or today_key
+
+    qs = (
+        Message.objects.filter(
+            chat=chat,
+            deleted_at__isnull=True,
+            message_type=MessageType.TEXT,
+            sent_at__gte=start,
+            sent_at__lt=end,
+        )
+        .filter(Q(sender=user) | Q(sender=partner))
+        .select_related('sender')
+        .order_by('sent_at')
+    )
+    messages = list(qs[:MAX_DAY_MESSAGES])
+    # Need enough of the user's own lines
+    own_count = sum(1 for m in messages if m.sender_id == user.id)
+    if own_count < 2:
+        return None
+
+    transcript = format_day_transcript(messages, user.id)
+    if not transcript.strip():
+        return None
+
+    my_name = getattr(user, 'nickname', None) or 'user'
+    partner_name = getattr(partner, 'nickname', None) or 'partner'
+    prompt_messages = [
+        {
+            'role': 'system',
+            'content': (
+                'Проанализируй переписку и опиши, как пользователь общается ИМЕННО с этим собеседником. '
+                'Ответь одним JSON без markdown со ключами: '
+                'tone, formality, emoji, length, notes, summary. '
+                'summary — 1–3 предложения на русском про особенности общения с этим человеком.'
+            ),
+        },
+        {
+            'role': 'user',
+            'content': (
+                f'Пользователь: @{my_name}\n'
+                f'Собеседник: @{partner_name}\n'
+                f'Переписка за {day_key} (метка «Я» = сообщения пользователя):\n'
+                f'{transcript}'
+            ),
+        },
+    ]
+    try:
+        raw = chat_completion(prompt_messages, max_tokens=350, temperature=0.3, timeout=45)
+    except Exception:
+        logger.exception(
+            'partner style analyze failed user=%s partner=%s',
+            user.id,
+            partner.id,
+        )
+        return None
+
+    traits, notes = _parse_style_payload(raw)
+    if not notes and not traits:
+        return None
+
+    profile, _ = PartnerStyleProfile.objects.update_or_create(
+        user=user,
+        partner=partner,
+        defaults={
+            'chat': chat,
+            'notes': notes,
+            'traits': traits,
+            'last_day_key': day_key,
+        },
+    )
+    return profile
+
+
+def analyze_user_day_partner_styles(user_id: str) -> dict:
+    """On logout/offline: refresh partner-specific style notes for today's DMs."""
+    from apps.chats.models import Chat, ChatType, Message, MessageType
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    try:
+        user = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return {'ok': False, 'reason': 'user_missing'}
+
+    start, end, day_key = _local_day_bounds()
+    chat_ids = (
+        Message.objects.filter(
+            deleted_at__isnull=True,
+            message_type=MessageType.TEXT,
+            sent_at__gte=start,
+            sent_at__lt=end,
+        )
+        .filter(Q(sender=user) | Q(chat__participants__user=user))
+        .values_list('chat_id', flat=True)
+        .distinct()
+    )
+
+    updated = 0
+    skipped = 0
+    for chat in Chat.objects.filter(id__in=chat_ids, chat_type=ChatType.DIRECT).distinct():
+        partner = get_partner_for_chat(chat, user)
+        if not partner:
+            skipped += 1
+            continue
+        # Debounce duplicate same-day jobs lightly via cache, but still refresh notes.
+        cache_key = f'ai:partner_day:{user.id}:{partner.id}:{day_key}'
+        if cache.get(cache_key):
+            skipped += 1
+            continue
+        result = analyze_partner_day_style(user, partner, chat, day_key=day_key)
+        if result:
+            cache.set(cache_key, 1, timeout=20 * 60)
+            updated += 1
+        else:
+            skipped += 1
+
+    return {'ok': True, 'updated': updated, 'skipped': skipped, 'day': day_key}

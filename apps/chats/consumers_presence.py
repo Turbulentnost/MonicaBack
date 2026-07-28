@@ -72,6 +72,11 @@ class PresenceConsumer(AsyncJsonWebsocketConsumer):
                         'last_seen_at': last_seen,
                     },
                 )
+                try:
+                    from apps.ai.tasks import analyze_day_partner_styles
+                    analyze_day_partner_styles.delay(self.user_id)
+                except Exception:
+                    pass
 
     async def receive_json(self, content, **kwargs):
         if content.get('action') == 'presence.ping':
@@ -87,6 +92,11 @@ class PresenceConsumer(AsyncJsonWebsocketConsumer):
                         'last_seen_at': last_seen,
                     },
                 )
+                try:
+                    from apps.ai.tasks import analyze_day_partner_styles
+                    analyze_day_partner_styles.delay(uid)
+                except Exception:
+                    pass
             if status == 'restored':
                 await self.channel_layer.group_send(
                     PRESENCE_GROUP,
