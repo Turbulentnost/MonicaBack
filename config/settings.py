@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     'apps.users',
     'apps.chats',
     'apps.notifications',
+    'apps.ai',
 ]
 
 MIDDLEWARE = [
@@ -230,3 +231,14 @@ FIREBASE_CREDENTIALS_PATH = os.getenv(
     'FIREBASE_CREDENTIALS_PATH',
     str(BASE_DIR / 'secrets' / 'firebase-adminsdk.json'),
 )
+
+# AI message completion (OpenAI-compatible / LM Studio)
+AI_COMPLETION_ENABLED = os.getenv('AI_COMPLETION_ENABLED', 'True').lower() in ('true', '1', 'yes')
+OPENAI_BASE_URL = os.getenv('OPENAI_BASE_URL', 'http://193.105.37.142:1234/v1').rstrip('/')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', 'lm-studio')
+OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'qwen3-vl-8b-thinking')
+AI_MAX_TOKENS = int(os.getenv('AI_MAX_TOKENS', '120'))
+AI_RATE_PER_MINUTE = int(os.getenv('AI_RATE_PER_MINUTE', '20'))
+AI_MIN_DRAFT_LEN = int(os.getenv('AI_MIN_DRAFT_LEN', '8'))
+AI_REQUEST_TIMEOUT_SEC = float(os.getenv('AI_REQUEST_TIMEOUT_SEC', '25'))
+

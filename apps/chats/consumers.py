@@ -143,6 +143,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         )
         # Превью в списке чатов (presence / user_* группы), даже если чат не открыт
         await self._broadcast_chat_preview(payload)
+        await self._enqueue_style_learning(message)
 
     async def _handle_edit_message(self, content):
         message_id = content.get('message_id')
@@ -398,3 +399,17 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                 user_channel_group(uid),
                 {'type': 'chat.preview', 'message': payload},
             )
+
+    async def _enqueue_style_learning(self, message):
+        if not message:
+            return
+        from apps.chats.models import MessageType
+        if getattr(message, 'message_type', None) != MessageType.TEXT:
+            return
+        try:
+            from apps.ai.tasks import update_user_style
+            update_user_style.delay(str(self.user.id), str(message.id))
+        except Exception:
+            # Learning must never break message delivery
+            pass
+
