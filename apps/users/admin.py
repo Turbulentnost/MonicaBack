@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 
-from apps.users.models import User
+from apps.users.models import User, UserBlock
 
 
 @admin.register(User)
@@ -26,3 +26,10 @@ class UserAdmin(BaseUserAdmin):
             ),
         }),
     )
+
+
+@admin.register(UserBlock)
+class UserBlockAdmin(admin.ModelAdmin):
+    list_display = ('blocker', 'blocked', 'created_at')
+    search_fields = ('blocker__nickname', 'blocked__nickname')
+    ordering = ('-created_at',)

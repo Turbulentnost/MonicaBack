@@ -174,6 +174,13 @@ def forward_messages(*, target_chat_id, source_chat_id, message_ids, user, comme
     if target_chat_id not in accessible_chat_ids or source_chat_id not in accessible_chat_ids:
         raise ForwardError('Нет доступа к исходному или целевому чату', status_code=403)
 
+    if getattr(target_chat, 'chat_type', 'direct') == 'direct':
+        from apps.chats.services import get_chat_partner
+        from apps.users.services.blocks import is_blocked_either_way
+        partner = get_chat_partner(target_chat, user)
+        if is_blocked_either_way(user, partner):
+            raise ForwardError('Общение с этим пользователем недоступно', status_code=403)
+
     source_messages = _load_forward_messages(source_chat, user, message_ids)
     copied_paths = {}
     committed = False

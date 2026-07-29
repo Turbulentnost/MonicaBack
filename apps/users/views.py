@@ -239,3 +239,51 @@ class UserAvatarView(APIView):
         response['Cache-Control'] = 'private, max-age=3600'
         response['ETag'] = f'"{user.photo}:{user.updated_at.timestamp()}"'
         return response
+
+
+class BlockUserView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, user_id):
+        from apps.users.services.blocks import BlockError, block_user, get_block_flags
+
+        try:
+            target = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({'detail': 'Пользователь не найден'}, status=404)
+
+        try:
+            _, created = block_user(request.user, target)
+        except BlockError as exc:
+            return Response({'detail': exc.detail}, status=exc.status_code)
+
+        i_blocked, blocked_by = get_block_flags(request.user, target)
+        return Response(
+            {
+                'blocked_user_id': str(target.id),
+                'is_blocked': i_blocked,
+                'is_blocked_by_partner': blocked_by,
+                'created': created,
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    def delete(self, request, user_id):
+        from apps.users.services.blocks import BlockError, get_block_flags, unblock_user
+
+        try:
+            target = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({'detail': 'Пользователь не найден'}, status=404)
+
+        try:
+            unblock_user(request.user, target)
+        except BlockError as exc:
+            return Response({'detail': exc.detail}, status=exc.status_code)
+
+        i_blocked, blocked_by = get_block_flags(request.user, target)
+        return Response({
+            'blocked_user_id': str(target.id),
+            'is_blocked': i_blocked,
+            'is_blocked_by_partner': blocked_by,
+        })

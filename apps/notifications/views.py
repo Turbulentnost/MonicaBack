@@ -131,6 +131,10 @@ class PrivateSessionInviteView(APIView):
         if not partner:
             return Response({'detail': 'Собеседник не найден'}, status=400)
 
+        from apps.users.services.blocks import is_blocked_either_way
+        if is_blocked_either_way(request.user, partner):
+            return Response({'detail': 'Общение с этим пользователем недоступно'}, status=403)
+
         with transaction.atomic():
             existing = (
                 PrivateSession.objects.select_for_update()
@@ -219,6 +223,10 @@ class PrivateSessionAcceptView(APIView):
             return Response({'detail': 'Только получатель может принять'}, status=403)
         if session.status != PrivateSessionStatus.PENDING:
             return Response({'detail': 'Приглашение уже обработано'}, status=400)
+
+        from apps.users.services.blocks import is_blocked_either_way
+        if is_blocked_either_way(request.user, session.initiator):
+            return Response({'detail': 'Общение с этим пользователем недоступно'}, status=403)
 
         session.status = PrivateSessionStatus.ACTIVE
         session.accepted_at = timezone.now()

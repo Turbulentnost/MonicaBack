@@ -387,6 +387,12 @@ def serialize_chat_list_item(chat, user, request=None):
         title = None
 
     photo = (chat.photo or '') if is_group else ''
+    is_blocked = False
+    is_blocked_by_partner = False
+    if partner and not is_group and not is_favorites:
+        from apps.users.services.blocks import get_block_flags
+        is_blocked, is_blocked_by_partner = get_block_flags(user, partner)
+
     return {
         'id': chat.id,
         'chat_type': chat.chat_type,
@@ -403,6 +409,8 @@ def serialize_chat_list_item(chat, user, request=None):
         ),
         'updated_at': chat.updated_at,
         'background_url': get_participant_background_url(chat, user),
+        'is_blocked': is_blocked,
+        'is_blocked_by_partner': is_blocked_by_partner,
     }
 
 
@@ -541,6 +549,13 @@ def upload_chat_files(chat, user, uploaded_files):
     max_count = settings.CHAT_ATTACHMENTS_MAX_COUNT
     if len(uploaded_files) > max_count:
         raise ValueError(f'Можно прикрепить не больше {max_count} файлов')
+    if getattr(chat, 'chat_type', 'direct') == 'direct':
+        from apps.users.services.blocks import BlockError, assert_users_can_interact
+        partner = get_chat_partner(chat, user)
+        try:
+            assert_users_can_interact(user, partner)
+        except BlockError as exc:
+            raise PermissionError(exc.detail) from exc
     return [upload_chat_file(chat, user, f) for f in uploaded_files]
 
 

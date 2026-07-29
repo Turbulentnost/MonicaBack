@@ -267,6 +267,10 @@ def start_call(chat_id, caller, client_instance_id, media_mode=CallMediaMode.AUD
     callee = next(participant.user for participant in participants if participant.user_id != caller.id)
     if not caller.is_active or not callee.is_active:
         raise CallError('unavailable', 'Участник звонка недоступен', 409)
+
+    from apps.users.services.blocks import is_blocked_either_way
+    if is_blocked_either_way(caller, callee):
+        raise CallError('forbidden', 'Общение с этим пользователем недоступно', 403)
     # Presence показывает только открытый UI. Офлайн-пользователь всё равно
     # может получить data-only FCM: мобильный демон поднимет входящий звонок.
     # Поэтому online не является условием создания звонка.

@@ -66,6 +66,8 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
     async def _broadcast_typing(self, is_typing, activity='typing'):
         if not hasattr(self, 'room_group_name'):
             return
+        if is_typing and await self._is_interaction_blocked():
+            return
         await self.channel_layer.group_send(
             self.room_group_name,
             {
@@ -76,6 +78,18 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                 'activity': activity if is_typing else '',
             },
         )
+
+    @database_sync_to_async
+    def _is_interaction_blocked(self):
+        try:
+            chat = Chat.objects.get(id=self.chat_id)
+        except Chat.DoesNotExist:
+            return True
+        if getattr(chat, 'chat_type', 'direct') != 'direct':
+            return False
+        from apps.chats.services import get_chat_partner
+        from apps.users.services.blocks import is_blocked_either_way
+        return is_blocked_either_way(self.user, get_chat_partner(chat, self.user))
 
     async def _handle_send_message(self, content):
         message_type = content.get('message_type', MessageType.TEXT)
@@ -271,6 +285,12 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             return None
         if not user_in_chat(chat, self.user):
             return None
+        if getattr(chat, 'chat_type', 'direct') == 'direct':
+            from apps.chats.services import get_chat_partner
+            from apps.users.services.blocks import is_blocked_either_way
+            partner = get_chat_partner(chat, self.user)
+            if is_blocked_either_way(self.user, partner):
+                return None
 
         reply_to = None
         if reply_to_id:

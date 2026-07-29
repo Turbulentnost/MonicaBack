@@ -36,7 +36,7 @@ from apps.notifications.views import (
     PrivateSessionInviteView,
     PrivateSessionLeaveView,
 )
-from apps.users.views import UserAvatarView
+from apps.users.views import BlockUserView, UserAvatarView
 
 urlpatterns = [
     path('chats/', ChatListView.as_view()),
@@ -68,6 +68,7 @@ urlpatterns = [
     path('calls/ice-config/', IceConfigView.as_view()),
     path('users/search/', UserSearchView.as_view()),
     path('users/<uuid:user_id>/avatar/', UserAvatarView.as_view()),
+    path('users/<uuid:user_id>/block/', BlockUserView.as_view()),
     path('link-preview/', LinkPreviewView.as_view()),
     path('media/', MediaProxyView.as_view()),
 ]
