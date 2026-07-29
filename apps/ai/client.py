@@ -45,7 +45,8 @@ def chat_completion(
     if not base:
         raise RuntimeError('OPENAI_BASE_URL is not configured')
 
-    url = f'{base}/chat/completions'
+    # Trailing slash required by the isolated Django proxy (APPEND_SLASH).
+    url = f'{base}/chat/completions/'
     token_budget = max_tokens if max_tokens is not None else settings.AI_MAX_TOKENS
     # Thinking models burn tokens on chain-of-thought; keep a safer floor for completions.
     if disable_thinking:
