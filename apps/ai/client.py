@@ -104,14 +104,10 @@ def chat_completion(
         return ''
     message = choices[0].get('message') or {}
     content = message.get('content') or ''
+    # Never use reasoning_content for autocomplete — Qwen-thinking dumps CoT there
+    # ("Хорошо, мне нужно продолжить черновик…") and it leaks into ghost text.
     if not content:
-        # Some thinking builds put the final answer elsewhere.
-        content = (
-            message.get('reasoning_content')
-            or message.get('reasoning')
-            or choices[0].get('text')
-            or ''
-        )
+        content = choices[0].get('text') or ''
     if isinstance(content, list):
         parts = []
         for item in content:

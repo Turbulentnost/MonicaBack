@@ -133,6 +133,36 @@ def strip_draft_prefix(suggestion: str, draft: str) -> str:
     return suggestion.lstrip('\n')
 
 
+_META_SUGGESTION_RE = re.compile(
+    r'(?i)^\s*('
+    r'хорошо[,!]?\s|'
+    r'мне нужно|'
+    r'нужно понять|'
+    r'пользователь|'
+    r'продолжить черновик|'
+    r'верн[уи]\s+только|'
+    r'в черновике|'
+    r'thinking|'
+    r'final\s*:'
+    r')'
+)
+
+
+def sanitize_suggestion(suggestion: str) -> str:
+    """Drop CoT / prompt leaks that must never reach the composer ghost."""
+    text = (suggestion or '').strip()
+    if not text:
+        return ''
+    if _META_SUGGESTION_RE.search(text):
+        return ''
+    if '\n' in text:
+        # Autocomplete should be a short suffix, not a multi-line essay.
+        text = text.split('\n', 1)[0].strip()
+    if len(text) > 180:
+        text = text[:180].rstrip()
+    return text
+
+
 def _local_day_bounds(now=None):
     tz_name = getattr(settings, 'TIME_ZONE', 'Europe/Moscow')
     try:
@@ -248,27 +278,24 @@ def build_completion_messages(
     examples = '\n'.join(f'- {s}' for s in samples) if samples else '- (примеров пока нет)'
     day_block = day_transcript.strip() or '(сообщений за сегодня пока нет)'
 
+    # Assistant-prefill pattern: draft is the last assistant message so the model
+    # continues it in `content` instead of dumping CoT into reasoning_content.
     system = (
-        'Ты помощник автодополнения сообщений в мессенджере Monica. '
-        'Продолжи черновик пользователя до конца фразы или короткого сообщения. '
-        'Пиши строго от лица пользователя, в его стиле общения с этим собеседником. '
-        'Учитывай контекст переписки за сегодня. '
-        'Верни ТОЛЬКО продолжение текста (суффикс), без кавычек, без пояснений, '
-        'без повтора уже набранного черновика. '
-        'Не используй markdown и не пиши теги thinking. '
-        'Язык — тот же, что в черновике (обычно русский).'
-    )
-    user = (
+        'Ты автодополнение сообщений в мессенджере Monica. '
+        'Продолжи последнее сообщение ассистента (это черновик пользователя) '
+        'до конца короткой фразы в его стиле. '
+        'Учитывай стиль и переписку за сегодня. '
+        'Пиши только новые символы после уже написанного текста — '
+        'без кавычек, без пояснений, без markdown, без тегов thinking. '
+        'Язык — тот же, что в черновике (обычно русский).\n\n'
         f'Общий стиль пользователя: {traits_line}\n'
         f'Особенности общения с этим собеседником: {partner_line or "пока нет"}\n'
         f'Примеры сообщений пользователя:\n{examples}\n\n'
-        f'Переписка за сегодня:\n{day_block}\n\n'
-        f'Черновик:\n{draft}\n\n'
-        f'Продолжение:'
+        f'Переписка за сегодня:\n{day_block}'
     )
     return [
         {'role': 'system', 'content': system},
-        {'role': 'user', 'content': user},
+        {'role': 'assistant', 'content': draft},
     ]
 
 
@@ -326,16 +353,18 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
         partner_traits=partner_traits,
     )
 
+    token_budget = max(int(settings.AI_MAX_TOKENS), 64)
     try:
-        raw = chat_completion(messages, max_tokens=max(int(settings.AI_MAX_TOKENS), 160))
+        raw = chat_completion(messages, max_tokens=token_budget, temperature=0.7)
+        suggestion = sanitize_suggestion(strip_draft_prefix(raw, draft))
+        # Thinking builds sometimes return an empty content on the first hit.
+        if not suggestion:
+            raw = chat_completion(messages, max_tokens=token_budget, temperature=0.85)
+            suggestion = sanitize_suggestion(strip_draft_prefix(raw, draft))
     except Exception as exc:
         logger.exception('AI complete failed for user=%s', user.id)
         detail = 'llm_unavailable' if 'unavailable' in str(exc).lower() else 'llm_error'
         return {'suggestion': '', 'request_id': request_id, 'error': True, 'detail': detail}
-
-    suggestion = strip_draft_prefix(raw, draft)
-    if len(suggestion) > 400:
-        suggestion = suggestion[:400].rstrip()
 
     # Never cache empty / failed answers — otherwise a downtime sticks for 30s.
     if suggestion:

@@ -5,6 +5,7 @@ from rest_framework.test import APIClient
 from apps.ai.models import UserStyleProfile
 from apps.ai.services import (
     append_style_sample,
+    sanitize_suggestion,
     select_style_samples,
     strip_draft_prefix,
 )
@@ -14,6 +15,13 @@ class StyleServicesTests(TestCase):
     def test_strip_draft_prefix(self):
         self.assertEqual(strip_draft_prefix('hello world', 'hello '), 'world')
         self.assertEqual(strip_draft_prefix('world', 'hello '), 'world')
+
+    def test_sanitize_drops_reasoning_leaks(self):
+        self.assertEqual(
+            sanitize_suggestion('Хорошо, мне нужно продолжить черновик'),
+            '',
+        )
+        self.assertEqual(sanitize_suggestion(', уже надоело'), ', уже надоело')
 
     def test_append_and_select_samples(self):
         User = get_user_model()
