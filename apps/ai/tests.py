@@ -11,6 +11,7 @@ from apps.ai.models import UserStyleProfile
 from apps.ai.services import (
     append_style_sample,
     build_completion_messages,
+    build_forced_continuation,
     infer_length_target,
     sanitize_suggestion,
     select_style_samples,
@@ -19,6 +20,16 @@ from apps.ai.services import (
 
 
 class StyleServicesTests(TestCase):
+    def test_forced_continuation_adds_virtual_comma_for_complete_short_draft(self):
+        messages = [
+            {'role': 'system', 'content': 'continue'},
+            {'role': 'assistant', 'content': 'ну как'},
+        ]
+        forced, prefix = build_forced_continuation(messages, 'ну как')
+        self.assertEqual(forced[-1]['content'], 'ну как,')
+        self.assertEqual(prefix, ', ')
+        self.assertEqual(messages[-1]['content'], 'ну как')
+
     def test_continue_final_message_only_for_non_empty_assistant_prefill(self):
         self.assertTrue(should_continue_final_message([
             {'role': 'user', 'content': 'context'},

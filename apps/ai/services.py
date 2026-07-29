@@ -174,6 +174,24 @@ def sanitize_suggestion(suggestion: str, *, max_chars: int = 280) -> str:
     return text
 
 
+def build_forced_continuation(
+    messages: list[dict[str, str]],
+    draft: str,
+) -> tuple[list[dict[str, str]], str]:
+    """
+    Make a semantically complete short draft visibly unfinished for LM Studio.
+
+    Qwen may legitimately emit EOS for text like "ну как". A virtual comma
+    forces continuation; the same comma+space is restored in the UI suffix.
+    """
+    stripped = (draft or '').rstrip()
+    if not stripped or stripped[-1] in ',.:;!?…—-':
+        return messages, ''
+    forced = [dict(message) for message in messages]
+    forced[-1]['content'] = f'{stripped},'
+    return forced, ', '
+
+
 def _local_day_bounds(now=None):
     tz_name = getattr(settings, 'TIME_ZONE', 'Europe/Moscow')
     try:
@@ -479,17 +497,31 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
     max_chars = {'short': 120, 'medium': 200, 'long': 320}[length_target]
     try:
         suggestion = ''
-        # qwen3-*-thinking often returns empty content; short retries help.
-        # disable_thinking knobs are ignored by this proxy and can hurt hit-rate.
-        for temperature in (0.75, 0.9, 0.55, 0.8, 0.65):
+        attempts = [(messages, '', 0.7)]
+        forced_messages, forced_prefix = build_forced_continuation(messages, draft)
+        if forced_prefix:
+            attempts.extend(
+                (forced_messages, forced_prefix, temperature)
+                for temperature in (0.55, 0.75, 0.9)
+            )
+        else:
+            attempts.extend(
+                (messages, '', temperature)
+                for temperature in (0.55, 0.8)
+            )
+
+        for attempt_messages, prefix, temperature in attempts:
             raw = chat_completion(
-                messages,
+                attempt_messages,
                 max_tokens=token_budget,
                 temperature=temperature,
                 disable_thinking=False,
             )
+            candidate = strip_draft_prefix(raw, draft)
+            if prefix and candidate:
+                candidate = f'{prefix}{candidate.lstrip()}'
             suggestion = sanitize_suggestion(
-                strip_draft_prefix(raw, draft),
+                candidate,
                 max_chars=max_chars,
             )
             if suggestion:
