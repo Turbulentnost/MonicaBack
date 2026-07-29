@@ -10,4 +10,5 @@ urlpatterns = [
     path('api/notifications/', include('apps.notifications.urls')),
     path('api/devices/', include((device_urlpatterns, 'devices'))),
     path('api/ai/', include('apps.ai.urls')),
+    path('api/lmstudio/', include('apps.lmstudio.urls')),
 ]

@@ -29,15 +29,18 @@ def clean_completion_text(text: str) -> str:
     return cleaned.strip()
 
 
+FORCED_MODEL = 'qwen3-vl-8b-thinking'
+
+
 def chat_completion(
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     *,
     max_tokens: int | None = None,
     temperature: float | None = None,
     timeout: float | None = None,
     disable_thinking: bool = True,
 ) -> str:
-    """Call OpenAI-compatible chat completions (LM Studio /v1)."""
+    """Call OpenAI-compatible chat completions via LM Studio proxy (/v1)."""
     base = (getattr(settings, 'OPENAI_BASE_URL', '') or '').rstrip('/')
     if not base:
         raise RuntimeError('OPENAI_BASE_URL is not configured')
@@ -51,7 +54,7 @@ def chat_completion(
         token_budget = max(int(token_budget), 256)
 
     payload: dict[str, Any] = {
-        'model': getattr(settings, 'OPENAI_MODEL', 'qwen3-vl-8b-thinking'),
+        'model': FORCED_MODEL,
         'messages': messages,
         'max_tokens': token_budget,
         'temperature': temperature if temperature is not None else 0.6,
@@ -67,7 +70,8 @@ def chat_completion(
         'Content-Type': 'application/json',
         'Accept': 'application/json',
     }
-    api_key = getattr(settings, 'OPENAI_API_KEY', '') or ''
+    # Proxy itself does not require JWT; optional key only if upstream/proxy expects it.
+    api_key = (getattr(settings, 'OPENAI_API_KEY', '') or '').strip()
     if api_key:
         headers['Authorization'] = f'Bearer {api_key}'
 

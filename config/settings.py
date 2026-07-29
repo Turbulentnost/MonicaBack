@@ -29,6 +29,7 @@ INSTALLED_APPS = [
     'apps.chats',
     'apps.notifications',
     'apps.ai',
+    'apps.lmstudio',
 ]
 
 MIDDLEWARE = [
@@ -232,13 +233,24 @@ FIREBASE_CREDENTIALS_PATH = os.getenv(
     str(BASE_DIR / 'secrets' / 'firebase-adminsdk.json'),
 )
 
-# AI message completion (OpenAI-compatible / LM Studio)
+# AI message completion via isolated LM Studio proxy (OpenAI-compatible)
 AI_COMPLETION_ENABLED = os.getenv('AI_COMPLETION_ENABLED', 'True').lower() in ('true', '1', 'yes')
-OPENAI_BASE_URL = os.getenv('OPENAI_BASE_URL', 'http://193.105.37.142:1234/v1').rstrip('/')
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', 'lm-studio')
+OPENAI_BASE_URL = os.getenv(
+    'OPENAI_BASE_URL',
+    'http://193.105.37.142:8000/api/lmstudio/v1',
+).rstrip('/')
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 OPENAI_MODEL = os.getenv('OPENAI_MODEL', 'qwen3-vl-8b-thinking')
 AI_MAX_TOKENS = int(os.getenv('AI_MAX_TOKENS', '200'))
 AI_RATE_PER_MINUTE = int(os.getenv('AI_RATE_PER_MINUTE', '20'))
 AI_MIN_DRAFT_LEN = int(os.getenv('AI_MIN_DRAFT_LEN', '8'))
 AI_REQUEST_TIMEOUT_SEC = float(os.getenv('AI_REQUEST_TIMEOUT_SEC', '45'))
+
+# Isolated LM Studio proxy (/api/lmstudio/…) — usually on the GPU host :8000
+# Endpoints are public (no JWT); upstream may still use LMSTUDIO_UPSTREAM_API_KEY.
+LMSTUDIO_UPSTREAM_BASE_URL = os.getenv(
+    'LMSTUDIO_UPSTREAM_BASE_URL',
+    'http://127.0.0.1:1234/v1',
+).rstrip('/')
+LMSTUDIO_UPSTREAM_API_KEY = os.getenv('LMSTUDIO_UPSTREAM_API_KEY', 'lm-studio')
 
