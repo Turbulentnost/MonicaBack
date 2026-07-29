@@ -362,10 +362,15 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
     token_budget = max(int(settings.AI_MAX_TOKENS), 48)
     try:
         suggestion = ''
-        # Thinking builds intermittently return empty content; a couple of
-        # short retries is cheaper than a huge token budget of CoT.
-        for temperature in (0.7, 0.85, 0.6):
-            raw = chat_completion(messages, max_tokens=token_budget, temperature=temperature)
+        # qwen3-*-thinking often returns empty content; short retries help.
+        # disable_thinking knobs are ignored by this proxy and can hurt hit-rate.
+        for temperature in (0.75, 0.9, 0.55, 0.8, 0.65):
+            raw = chat_completion(
+                messages,
+                max_tokens=token_budget,
+                temperature=temperature,
+                disable_thinking=False,
+            )
             suggestion = sanitize_suggestion(strip_draft_prefix(raw, draft))
             if suggestion:
                 break
