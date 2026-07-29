@@ -2,6 +2,7 @@ from django.test import TestCase
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 
+from apps.ai.client import estimate_messages_tokens, fit_messages_to_token_budget
 from apps.ai.models import UserStyleProfile
 from apps.ai.services import (
     append_style_sample,
@@ -14,6 +15,23 @@ from apps.ai.services import (
 
 
 class StyleServicesTests(TestCase):
+    def test_prompt_budget_trims_earliest_context_and_keeps_current_draft(self):
+        current_draft = 'полный текущий черновик пользователя'
+        messages = [
+            {'role': 'system', 'content': 'continue safely'},
+            {'role': 'user', 'content': 'СТАРАЯ ИСТОРИЯ ' * 500},
+            {'role': 'assistant', 'content': current_draft},
+        ]
+        fitted = fit_messages_to_token_budget(
+            messages,
+            completion_tokens=100,
+            context_window_tokens=500,
+            reserve_tokens=50,
+        )
+        self.assertLessEqual(estimate_messages_tokens(fitted), 350)
+        self.assertTrue(fitted[1]['content'].startswith('[earlier context trimmed]'))
+        self.assertEqual(fitted[-1]['content'], current_draft)
+
     def test_strip_draft_prefix(self):
         self.assertEqual(strip_draft_prefix('hello world', 'hello '), 'world')
         self.assertEqual(strip_draft_prefix('world', 'hello '), 'world')

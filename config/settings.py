@@ -245,6 +245,8 @@ AI_MAX_TOKENS = int(os.getenv('AI_MAX_TOKENS', '200'))
 AI_RATE_PER_MINUTE = int(os.getenv('AI_RATE_PER_MINUTE', '20'))
 AI_MIN_DRAFT_LEN = int(os.getenv('AI_MIN_DRAFT_LEN', '1'))
 AI_REQUEST_TIMEOUT_SEC = float(os.getenv('AI_REQUEST_TIMEOUT_SEC', '45'))
+AI_CONTEXT_WINDOW_TOKENS = int(os.getenv('AI_CONTEXT_WINDOW_TOKENS', '125000'))
+AI_CONTEXT_RESERVE_TOKENS = int(os.getenv('AI_CONTEXT_RESERVE_TOKENS', '512'))
 
 # Isolated LM Studio proxy (/api/lmstudio/…) — usually on the GPU host :8000
 # Endpoints are public (no JWT); upstream may still use LMSTUDIO_UPSTREAM_API_KEY.

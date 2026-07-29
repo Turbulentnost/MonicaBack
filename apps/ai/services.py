@@ -390,14 +390,14 @@ def build_completion_messages(
     # Full composer text is included explicitly AND as assistant prefill so the
     # model both "sees" it in context and continues it in the content channel.
     context = (
+        '=== История общения за сегодня ===\n'
+        f'последнее_от_собеседника: {last_partner}\n'
+        f'{day_block}\n'
+        '\n'
         '=== Как я общаюсь с этим пользователем ===\n'
         f'общий_стиль: {traits_line}\n'
         f'стиль_с_этим_собеседником: {partner_line or "пока нет"}\n'
         f'примеры_моих_фраз: {sample_bits}\n'
-        '\n'
-        '=== История общения за сегодня ===\n'
-        f'последнее_от_собеседника: {last_partner}\n'
-        f'{day_block}\n'
         '\n'
         '=== Моё текущее сообщение (продолжи его) ===\n'
         f'{draft}\n'

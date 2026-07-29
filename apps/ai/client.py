@@ -30,6 +30,115 @@ def clean_completion_text(text: str) -> str:
 
 
 FORCED_MODEL = 'qwen3-vl-8b-thinking'
+TRIM_MARKER = '[earlier context trimmed]\n'
+
+
+def estimate_tokens(value: Any) -> int:
+    """
+    Conservative tokenizer-free estimate.
+
+    UTF-8 bytes / 2 intentionally overestimates most Latin text and is close
+    enough for Cyrillic. This keeps requests below the configured hard limit
+    without coupling the backend to a model-specific tokenizer.
+    """
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        return max(1, (len(value.encode('utf-8')) + 1) // 2)
+    if isinstance(value, dict):
+        return 2 + sum(estimate_tokens(key) + estimate_tokens(item) for key, item in value.items())
+    if isinstance(value, (list, tuple)):
+        return 2 + sum(estimate_tokens(item) for item in value)
+    return estimate_tokens(str(value))
+
+
+def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
+    # Small per-message allowance covers chat-template role/separator tokens.
+    return 3 + sum(6 + estimate_tokens(message) for message in messages)
+
+
+def _trim_text_start(text: str, tokens_to_remove: int) -> str:
+    if not text:
+        return text
+    # Our estimator uses at most two UTF-8 bytes per estimated token.
+    target_bytes = max(1, tokens_to_remove * 2)
+    removed = 0
+    cut = 0
+    for index, char in enumerate(text):
+        removed += len(char.encode('utf-8'))
+        cut = index + 1
+        if removed >= target_bytes:
+            break
+    tail = text[cut:].lstrip()
+    return f'{TRIM_MARKER}{tail}' if tail else TRIM_MARKER.rstrip()
+
+
+def fit_messages_to_token_budget(
+    messages: list[dict[str, Any]],
+    *,
+    completion_tokens: int,
+    context_window_tokens: int | None = None,
+    reserve_tokens: int | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Fit the request into the model context window.
+
+    Old non-system context is trimmed first. The final assistant-prefill
+    message (the user's complete current draft) is protected.
+    """
+    window = int(
+        context_window_tokens
+        if context_window_tokens is not None
+        else getattr(settings, 'AI_CONTEXT_WINDOW_TOKENS', 125000)
+    )
+    reserve = int(
+        reserve_tokens
+        if reserve_tokens is not None
+        else getattr(settings, 'AI_CONTEXT_RESERVE_TOKENS', 512)
+    )
+    prompt_budget = max(256, window - max(0, int(completion_tokens)) - max(0, reserve))
+    fitted = [dict(message) for message in messages]
+    estimated = estimate_messages_tokens(fitted)
+    if estimated <= prompt_budget:
+        return fitted
+
+    protected_last = (
+        len(fitted) - 1
+        if fitted and fitted[-1].get('role') == 'assistant'
+        else None
+    )
+    candidates = [
+        index
+        for index, message in enumerate(fitted)
+        if message.get('role') != 'system' and index != protected_last
+    ]
+
+    for index in candidates:
+        if estimated <= prompt_budget:
+            break
+        content = fitted[index].get('content')
+        overflow = estimated - prompt_budget
+        if isinstance(content, str):
+            fitted[index]['content'] = _trim_text_start(content, overflow + 16)
+        else:
+            # Old VL/non-text context is safer to drop as a whole than to
+            # corrupt its OpenAI content-part structure.
+            fitted[index]['content'] = TRIM_MARKER.rstrip()
+        estimated = estimate_messages_tokens(fitted)
+
+    if estimated > prompt_budget:
+        logger.warning(
+            'AI prompt remains over budget after trimming: estimated=%s budget=%s',
+            estimated,
+            prompt_budget,
+        )
+    else:
+        logger.info(
+            'AI prompt trimmed to token budget: estimated=%s budget=%s',
+            estimated,
+            prompt_budget,
+        )
+    return fitted
 
 
 def chat_completion(
@@ -56,7 +165,10 @@ def chat_completion(
 
     payload: dict[str, Any] = {
         'model': FORCED_MODEL,
-        'messages': messages,
+        'messages': fit_messages_to_token_budget(
+            messages,
+            completion_tokens=token_budget,
+        ),
         'max_tokens': token_budget,
         'temperature': temperature if temperature is not None else 0.6,
         'stream': False,
