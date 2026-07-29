@@ -5,6 +5,8 @@ from rest_framework.test import APIClient
 from apps.ai.models import UserStyleProfile
 from apps.ai.services import (
     append_style_sample,
+    build_completion_messages,
+    infer_length_target,
     sanitize_suggestion,
     select_style_samples,
     strip_draft_prefix,
@@ -22,6 +24,28 @@ class StyleServicesTests(TestCase):
             '',
         )
         self.assertEqual(sanitize_suggestion(', уже надоело'), ', уже надоело')
+
+    def test_infer_length_and_day_context_in_prompt(self):
+        self.assertEqual(infer_length_target('ок давай'), 'short')
+        day = (
+            'Собеседник: привет, как дела?\n'
+            'Я: норм\n'
+            'Собеседник: можешь завтра в 5?\n'
+        )
+        self.assertEqual(infer_length_target('давай', day), 'short')
+        msgs = build_completion_messages(
+            'давай тогда',
+            ['норм', 'ок'],
+            {'tone': 'неформальный'},
+            day_transcript=day,
+        )
+        user = msgs[1]['content']
+        self.assertIn('today_chat', user)
+        self.assertIn('можешь завтра в 5?', user)
+        self.assertIn('last_partner_message=можешь завтра в 5?', user)
+        self.assertIn('length_target=', user)
+        self.assertEqual(msgs[2]['role'], 'assistant')
+        self.assertEqual(msgs[2]['content'], 'давай тогда')
 
     def test_append_and_select_samples(self):
         User = get_user_model()

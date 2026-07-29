@@ -22,6 +22,9 @@ MIN_SAMPLE_LEN = 12
 TRAITS_EVERY_N = 25
 MAX_DAY_MESSAGES = 60
 MAX_DAY_CHARS = 4500
+# How much of today's chat we put into the completion prompt (recent tail).
+COMPLETION_DAY_CHARS = 1800
+COMPLETION_DAY_LINES = 36
 
 
 def get_or_create_style_profile(user) -> UserStyleProfile:
@@ -148,17 +151,26 @@ _META_SUGGESTION_RE = re.compile(
 )
 
 
-def sanitize_suggestion(suggestion: str) -> str:
-    """Drop CoT / prompt leaks that must never reach the composer ghost."""
-    text = (suggestion or '').replace('\r\n', '\n')
+def sanitize_suggestion(suggestion: str, *, max_chars: int = 280) -> str:
+    """Drop CoT / prompt leaks; allow a short multi-line suffix when needed."""
+    text = (suggestion or '').replace('\r\n', '\n').strip()
     if not text:
         return ''
-    # Model sometimes appends CoT after a good first line.
-    text = text.split('\n', 1)[0].strip()
+    lines = []
+    for raw_line in text.split('\n'):
+        line = raw_line.rstrip()
+        if _META_SUGGESTION_RE.search(line):
+            break
+        if line.strip() == '' and not lines:
+            continue
+        lines.append(line)
+        if len(lines) >= 5:
+            break
+    text = '\n'.join(lines).strip()
     if not text or _META_SUGGESTION_RE.search(text):
         return ''
-    if len(text) > 180:
-        text = text[:180].rstrip()
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip()
     return text
 
 
@@ -209,6 +221,7 @@ def load_today_messages(chat_id, user) -> tuple[list, str]:
         return [], ''
 
     start, end, _ = _local_day_bounds()
+    # Take the *latest* messages of the day so the model sees the current stage.
     qs = (
         Message.objects.filter(
             chat=chat,
@@ -219,9 +232,9 @@ def load_today_messages(chat_id, user) -> tuple[list, str]:
         )
         .exclude(hidden_for__user=user)
         .select_related('sender')
-        .order_by('sent_at')
+        .order_by('-sent_at')
     )
-    messages = list(qs[:MAX_DAY_MESSAGES])
+    messages = list(reversed(list(qs[:MAX_DAY_MESSAGES])))
     return messages, format_day_transcript(messages, user.id)
 
 
@@ -246,6 +259,72 @@ def get_partner_style(user, partner) -> PartnerStyleProfile | None:
         .only('notes', 'traits', 'updated_at')
         .first()
     )
+
+
+def _tail_day_transcript(day_transcript: str) -> str:
+    lines = [ln.strip() for ln in (day_transcript or '').splitlines() if ln.strip()]
+    if not lines:
+        return '(сообщений за сегодня пока нет)'
+    if len(lines) > COMPLETION_DAY_LINES:
+        lines = lines[-COMPLETION_DAY_LINES:]
+    text = '\n'.join(lines)
+    if len(text) > COMPLETION_DAY_CHARS:
+        text = text[-COMPLETION_DAY_CHARS:]
+        cut = text.find('\n')
+        if 0 <= cut < 80:
+            text = text[cut + 1:]
+    return text
+
+
+def _last_labeled_line(day_transcript: str, *, mine: bool) -> str:
+    for line in reversed((day_transcript or '').splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        if mine:
+            if line.startswith('Я:'):
+                return line.split(':', 1)[1].strip()
+        elif not line.startswith('Я:') and ':' in line:
+            return line.split(':', 1)[1].strip()
+    return ''
+
+
+def infer_length_target(draft: str, day_transcript: str = '', traits: dict | None = None) -> str:
+    """Hint for the model: short / medium / long continuation."""
+    draft = draft or ''
+    traits = traits or {}
+    trait_len = str(traits.get('length') or '').lower()
+    draft_len = len(draft.strip())
+    recent = _tail_day_transcript(day_transcript)
+    partner_last = _last_labeled_line(day_transcript, mine=False)
+    partner_len = len(partner_last)
+
+    # Explicit style trait wins when clear.
+    if any(x in trait_len for x in ('корот', 'short', 'лакон', 'кратк')):
+        return 'short'
+    if any(x in trait_len for x in ('длин', 'long', 'развёрн', 'подроб')):
+        return 'long'
+
+    # Draft already long → finish briefly; short chatty drafts stay short.
+    if draft_len >= 160 or draft.count('\n') >= 2:
+        return 'medium'
+    if partner_len >= 180:
+        return 'medium'
+    # Look at recent own messages length for this stage.
+    own_lens = [
+        len(ln.split(':', 1)[1].strip())
+        for ln in recent.splitlines()
+        if ln.startswith('Я:') and ':' in ln
+    ]
+    if own_lens:
+        avg = sum(own_lens[-6:]) / max(len(own_lens[-6:]), 1)
+        if avg <= 40:
+            return 'short'
+        if avg >= 120:
+            return 'long'
+    if draft_len <= 50 and partner_len <= 80:
+        return 'short'
+    return 'medium'
 
 
 def build_completion_messages(
@@ -274,29 +353,36 @@ def build_completion_messages(
     if partner_notes:
         partner_line = (partner_line + '; ' if partner_line else '') + partner_notes
 
-    # Keep prompts short: long Russian system prompts make qwen3-*-thinking
-    # return empty content. Compact context + assistant-prefill of the draft
-    # yields a real suffix in `content`.
+    # Compact prompt: long Russian system text makes qwen3-thinking return empty
+    # content. Keep rules short; put today's chat as a clear recent block.
     sample_bits = ' | '.join(
         s.replace('\n', ' ').strip()[:80]
         for s in (samples or [])[:4]
         if isinstance(s, str) and s.strip()
     ) or '(нет)'
-    day_compact = ' / '.join(
-        line.strip()
-        for line in (day_transcript or '').splitlines()
-        if line.strip()
-    )[:320] or '(пусто)'
+    day_block = _tail_day_transcript(day_transcript)
+    last_partner = _last_labeled_line(day_transcript, mine=False) or '(нет)'
+    length_target = infer_length_target(draft, day_transcript, traits)
+    length_rule = {
+        'short': 'suffix SHORT (a few words / one short phrase); stop early',
+        'medium': 'suffix MEDIUM (finish the thought, 1 short sentence); then stop',
+        'long': 'suffix may be 1-3 short sentences if the draft needs it; then stop',
+    }[length_target]
 
     system = (
-        'Continue assistant draft in Russian, suffix only. '
-        'No quotes, no explanations, no markdown.'
+        'Continue the assistant draft as this user in the messenger. '
+        'Output ONLY the new suffix (no quotes, no markdown, no explanations). '
+        'Use today_chat: reply in context to the partner\'s last messages. '
+        f'Length: {length_rule}. '
+        'Do not invent a new topic; do not pad; stop when the message feels complete.'
     )
     context = (
-        f'style={traits_line}; '
-        f'partner={partner_line or "n/a"}; '
-        f'samples={sample_bits}; '
-        f'today={day_compact}'
+        f'style={traits_line}\n'
+        f'partner_style={partner_line or "n/a"}\n'
+        f'samples={sample_bits}\n'
+        f'length_target={length_target}\n'
+        f'last_partner_message={last_partner}\n'
+        f'today_chat (recent, me=Я / partner=other):\n{day_block}'
     )
     return [
         {'role': 'system', 'content': system},
@@ -350,16 +436,24 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
         except (Chat.DoesNotExist, ValueError, TypeError):
             pass
 
+    traits = profile.traits if isinstance(profile.traits, dict) else {}
+    length_target = infer_length_target(draft, day_transcript, traits)
     messages = build_completion_messages(
         draft,
         samples,
-        profile.traits if isinstance(profile.traits, dict) else {},
+        traits,
         day_transcript=day_transcript,
         partner_notes=partner_notes,
         partner_traits=partner_traits,
     )
 
-    token_budget = max(int(settings.AI_MAX_TOKENS), 48)
+    base_tokens = max(int(settings.AI_MAX_TOKENS), 48)
+    token_budget = {
+        'short': max(base_tokens, 48),
+        'medium': max(base_tokens, 96),
+        'long': max(base_tokens, 160),
+    }[length_target]
+    max_chars = {'short': 120, 'medium': 200, 'long': 320}[length_target]
     try:
         suggestion = ''
         # qwen3-*-thinking often returns empty content; short retries help.
@@ -371,7 +465,10 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
                 temperature=temperature,
                 disable_thinking=False,
             )
-            suggestion = sanitize_suggestion(strip_draft_prefix(raw, draft))
+            suggestion = sanitize_suggestion(
+                strip_draft_prefix(raw, draft),
+                max_chars=max_chars,
+            )
             if suggestion:
                 break
     except Exception as exc:
