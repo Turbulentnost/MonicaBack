@@ -57,6 +57,17 @@ def estimate_messages_tokens(messages: list[dict[str, Any]]) -> int:
     return 3 + sum(6 + estimate_tokens(message) for message in messages)
 
 
+def should_continue_final_message(messages: list[dict[str, Any]]) -> bool:
+    """LM Studio must be told explicitly to continue a non-empty assistant prefill."""
+    if not messages:
+        return False
+    last = messages[-1]
+    return (
+        last.get('role') == 'assistant'
+        and bool(last.get('content'))
+    )
+
+
 def _trim_text_start(text: str, tokens_to_remove: int) -> str:
     if not text:
         return text
@@ -163,16 +174,21 @@ def chat_completion(
     else:
         token_budget = max(int(token_budget), 256)
 
+    fitted_messages = fit_messages_to_token_budget(
+        messages,
+        completion_tokens=token_budget,
+    )
     payload: dict[str, Any] = {
         'model': FORCED_MODEL,
-        'messages': fit_messages_to_token_budget(
-            messages,
-            completion_tokens=token_budget,
-        ),
+        'messages': fitted_messages,
         'max_tokens': token_budget,
         'temperature': temperature if temperature is not None else 0.6,
         'stream': False,
     }
+    if should_continue_final_message(fitted_messages):
+        # Without this LM Studio treats the assistant prefill as complete and
+        # immediately emits EOS (one completion token, empty content).
+        payload['continue_final_message'] = True
     if disable_thinking:
         # LM Studio / Qwen3: try common knobs to skip CoT and return the answer only.
         payload['enable_thinking'] = False

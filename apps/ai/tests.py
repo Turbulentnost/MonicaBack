@@ -2,7 +2,11 @@ from django.test import TestCase
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 
-from apps.ai.client import estimate_messages_tokens, fit_messages_to_token_budget
+from apps.ai.client import (
+    estimate_messages_tokens,
+    fit_messages_to_token_budget,
+    should_continue_final_message,
+)
 from apps.ai.models import UserStyleProfile
 from apps.ai.services import (
     append_style_sample,
@@ -15,6 +19,18 @@ from apps.ai.services import (
 
 
 class StyleServicesTests(TestCase):
+    def test_continue_final_message_only_for_non_empty_assistant_prefill(self):
+        self.assertTrue(should_continue_final_message([
+            {'role': 'user', 'content': 'context'},
+            {'role': 'assistant', 'content': 'current draft'},
+        ]))
+        self.assertFalse(should_continue_final_message([
+            {'role': 'assistant', 'content': ''},
+        ]))
+        self.assertFalse(should_continue_final_message([
+            {'role': 'user', 'content': 'current draft'},
+        ]))
+
     def test_prompt_budget_trims_earliest_context_and_keeps_current_draft(self):
         current_draft = 'полный текущий черновик пользователя'
         messages = [
