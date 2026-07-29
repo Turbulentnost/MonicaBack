@@ -12,6 +12,7 @@ from apps.ai.services import (
     append_style_sample,
     build_completion_messages,
     build_forced_continuation,
+    day_transcript_to_messages,
     infer_length_target,
     sanitize_suggestion,
     select_style_samples,
@@ -86,16 +87,33 @@ class StyleServicesTests(TestCase):
             day_transcript=day,
             partner_notes='общаемся коротко',
         )
-        user = msgs[1]['content']
-        self.assertIn('Как я общаюсь с этим пользователем', user)
-        self.assertIn('История общения за сегодня', user)
-        self.assertIn('Моё текущее сообщение', user)
-        self.assertIn('можешь завтра в 5?', user)
-        self.assertIn('последнее_от_собеседника: можешь завтра в 5?', user)
-        self.assertIn(draft, user)
-        self.assertIn('length_target=', user)
-        self.assertEqual(msgs[2]['role'], 'assistant')
-        self.assertEqual(msgs[2]['content'], draft)
+        self.assertIn('Как я общаюсь с этим пользователем', msgs[1]['content'])
+        self.assertIn('length_target=', msgs[1]['content'])
+        self.assertEqual(
+            msgs[2:-1],
+            [
+                {'role': 'user', 'content': 'привет, как дела?'},
+                {'role': 'assistant', 'content': 'норм'},
+                {'role': 'user', 'content': 'можешь завтра в 5?'},
+            ],
+        )
+        self.assertEqual(msgs[-1]['role'], 'assistant')
+        self.assertEqual(msgs[-1]['content'], draft)
+
+    def test_day_transcript_roles_and_consecutive_messages(self):
+        transcript = (
+            'Собеседник: один\n'
+            'Собеседник: два\n'
+            'Я: три\n'
+            'Я: четыре\n'
+        )
+        self.assertEqual(
+            day_transcript_to_messages(transcript),
+            [
+                {'role': 'user', 'content': 'один\nдва'},
+                {'role': 'assistant', 'content': 'три\nчетыре'},
+            ],
+        )
 
     def test_append_and_select_samples(self):
         User = get_user_model()

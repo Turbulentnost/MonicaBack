@@ -204,7 +204,7 @@ def _local_day_bounds(now=None):
     return start, end, now.date().isoformat()
 
 
-def format_day_transcript(messages, current_user_id) -> str:
+def format_day_transcript(messages, current_user_id, *, max_chars: int | None = MAX_DAY_CHARS) -> str:
     lines = []
     total = 0
     for msg in messages:
@@ -217,7 +217,7 @@ def format_day_transcript(messages, current_user_id) -> str:
         if msg.message_type != 'text':
             continue
         line = f'{label}: {text}'
-        if total + len(line) > MAX_DAY_CHARS:
+        if max_chars is not None and total + len(line) > max_chars:
             break
         lines.append(line)
         total += len(line) + 1
@@ -253,7 +253,9 @@ def load_today_messages(chat_id, user) -> tuple[list, str]:
         .order_by('-sent_at')
     )
     messages = list(reversed(list(qs[:MAX_DAY_MESSAGES])))
-    return messages, format_day_transcript(messages, user.id)
+    # Completion uses the full loaded day. The global 125k token budget in the
+    # client trims oldest context only when the complete request is too large.
+    return messages, format_day_transcript(messages, user.id, max_chars=None)
 
 
 def get_partner_for_chat(chat, user):
@@ -305,6 +307,32 @@ def _last_labeled_line(day_transcript: str, *, mine: bool) -> str:
         elif not line.startswith('Я:') and ':' in line:
             return line.split(':', 1)[1].strip()
     return ''
+
+
+def day_transcript_to_messages(day_transcript: str) -> list[dict[str, str]]:
+    """
+    Convert today's labeled transcript to real chat roles.
+
+    The current Monica user is represented as assistant because the model is
+    continuing their message; the partner is represented as user.
+    """
+    result: list[dict[str, str]] = []
+    for raw_line in (day_transcript or '').splitlines():
+        line = raw_line.strip()
+        if not line or ':' not in line:
+            continue
+        label, text = line.split(':', 1)
+        text = text.strip()
+        if not text:
+            continue
+        role = 'assistant' if label.strip() == 'Я' else 'user'
+        # Merge consecutive messages from one sender while preserving their
+        # order and message boundaries.
+        if result and result[-1]['role'] == role:
+            result[-1]['content'] = f"{result[-1]['content']}\n{text}"
+        else:
+            result.append({'role': role, 'content': text})
+    return result
 
 
 def infer_length_target(draft: str, day_transcript: str = '', traits: dict | None = None) -> str:
@@ -385,8 +413,7 @@ def build_completion_messages(
         for s in (samples or [])[:6]
         if isinstance(s, str) and s.strip()
     ) or '(нет)'
-    day_block = _tail_day_transcript(day_transcript)
-    last_partner = _last_labeled_line(day_transcript, mine=False) or '(нет)'
+    history_messages = day_transcript_to_messages(day_transcript)
     length_target = infer_length_target(draft, day_transcript, traits)
     length_rule = {
         'short': 'короткий суффикс (несколько слов / короткая фраза), затем стоп',
@@ -402,31 +429,23 @@ def build_completion_messages(
         'Продолжи ИМЕННО текущее сообщение — верни только новый суффикс '
         '(без повтора уже написанного, без кавычек, без пояснений, без markdown). '
         f'Длина: {length_rule}. '
-        'Учитывай контекст сегодняшней переписки и последнее сообщение собеседника. '
+        'История ниже передана реальными ролями: user — собеседник, '
+        'assistant — автор текущего черновика. '
+        'Учитывай смысл всей сегодняшней переписки и особенно последние сообщения. '
         'Не меняй тему; не раздувай текст; остановись, когда сообщение звучит законченным.'
     )
-    # Full composer text is included explicitly AND as assistant prefill so the
-    # model both "sees" it in context and continues it in the content channel.
-    context = (
-        '=== История общения за сегодня ===\n'
-        f'последнее_от_собеседника: {last_partner}\n'
-        f'{day_block}\n'
-        '\n'
+    style_context = (
         '=== Как я общаюсь с этим пользователем ===\n'
         f'общий_стиль: {traits_line}\n'
         f'стиль_с_этим_собеседником: {partner_line or "пока нет"}\n'
         f'примеры_моих_фраз: {sample_bits}\n'
-        '\n'
-        '=== Моё текущее сообщение (продолжи его) ===\n'
-        f'{draft}\n'
-        '\n'
         f'length_target={length_target}\n'
-        'Задача: продолжить моё текущее сообщение выше. '
-        'Верни только продолжение (суффикс) после уже написанного текста.'
+        'После истории идёт новый полный черновик автора. Продолжи именно его.'
     )
     return [
         {'role': 'system', 'content': system},
-        {'role': 'user', 'content': context},
+        {'role': 'user', 'content': style_context},
+        *history_messages,
         {'role': 'assistant', 'content': draft},
     ]
 
