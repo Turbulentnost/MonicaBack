@@ -33,19 +33,24 @@ class StyleServicesTests(TestCase):
             'Собеседник: можешь завтра в 5?\n'
         )
         self.assertEqual(infer_length_target('давай', day), 'short')
+        draft = 'давай тогда в пять\nесли ок'
         msgs = build_completion_messages(
-            'давай тогда',
+            draft,
             ['норм', 'ок'],
             {'tone': 'неформальный'},
             day_transcript=day,
+            partner_notes='общаемся коротко',
         )
         user = msgs[1]['content']
-        self.assertIn('today_chat', user)
+        self.assertIn('Как я общаюсь с этим пользователем', user)
+        self.assertIn('История общения за сегодня', user)
+        self.assertIn('Моё текущее сообщение', user)
         self.assertIn('можешь завтра в 5?', user)
-        self.assertIn('last_partner_message=можешь завтра в 5?', user)
+        self.assertIn('последнее_от_собеседника: можешь завтра в 5?', user)
+        self.assertIn(draft, user)
         self.assertIn('length_target=', user)
         self.assertEqual(msgs[2]['role'], 'assistant')
-        self.assertEqual(msgs[2]['content'], 'давай тогда')
+        self.assertEqual(msgs[2]['content'], draft)
 
     def test_append_and_select_samples(self):
         User = get_user_model()

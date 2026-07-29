@@ -335,8 +335,17 @@ def build_completion_messages(
     partner_notes: str = '',
     partner_traits: dict | None = None,
 ) -> list[dict[str, str]]:
+    """
+    Prompt package for continuation:
+    1) how I talk with this partner
+    2) today's chat history
+    3) my full current composer text
+    → ask to continue that exact text.
+    """
     traits = traits or {}
     partner_traits = partner_traits or {}
+    draft = draft if draft is not None else ''
+
     traits_bits = []
     for key in ('tone', 'formality', 'emoji', 'length', 'notes'):
         value = traits.get(key)
@@ -353,36 +362,49 @@ def build_completion_messages(
     if partner_notes:
         partner_line = (partner_line + '; ' if partner_line else '') + partner_notes
 
-    # Compact prompt: long Russian system text makes qwen3-thinking return empty
-    # content. Keep rules short; put today's chat as a clear recent block.
     sample_bits = ' | '.join(
         s.replace('\n', ' ').strip()[:80]
-        for s in (samples or [])[:4]
+        for s in (samples or [])[:6]
         if isinstance(s, str) and s.strip()
     ) or '(нет)'
     day_block = _tail_day_transcript(day_transcript)
     last_partner = _last_labeled_line(day_transcript, mine=False) or '(нет)'
     length_target = infer_length_target(draft, day_transcript, traits)
     length_rule = {
-        'short': 'suffix SHORT (a few words / one short phrase); stop early',
-        'medium': 'suffix MEDIUM (finish the thought, 1 short sentence); then stop',
-        'long': 'suffix may be 1-3 short sentences if the draft needs it; then stop',
+        'short': 'короткий суффикс (несколько слов / короткая фраза), затем стоп',
+        'medium': 'средний суффикс (закончить мысль, 1 короткое предложение), затем стоп',
+        'long': 'можно 1–3 коротких предложения, если черновик этого требует, затем стоп',
     }[length_target]
 
+    # Keep system compact (thinking models stall on huge system prompts).
     system = (
-        'Continue the assistant draft as this user in the messenger. '
-        'Output ONLY the new suffix (no quotes, no markdown, no explanations). '
-        'Use today_chat: reply in context to the partner\'s last messages. '
-        f'Length: {length_rule}. '
-        'Do not invent a new topic; do not pad; stop when the message feels complete.'
+        'Ты автодополнение в мессенджере. Пишешь ОТ ЛИЦА пользователя. '
+        'Тебе даны: стиль общения с этим собеседником, переписка за сегодня '
+        'и полное текущее сообщение из поля ввода. '
+        'Продолжи ИМЕННО текущее сообщение — верни только новый суффикс '
+        '(без повтора уже написанного, без кавычек, без пояснений, без markdown). '
+        f'Длина: {length_rule}. '
+        'Учитывай контекст сегодняшней переписки и последнее сообщение собеседника. '
+        'Не меняй тему; не раздувай текст; остановись, когда сообщение звучит законченным.'
     )
+    # Full composer text is included explicitly AND as assistant prefill so the
+    # model both "sees" it in context and continues it in the content channel.
     context = (
-        f'style={traits_line}\n'
-        f'partner_style={partner_line or "n/a"}\n'
-        f'samples={sample_bits}\n'
+        '=== Как я общаюсь с этим пользователем ===\n'
+        f'общий_стиль: {traits_line}\n'
+        f'стиль_с_этим_собеседником: {partner_line or "пока нет"}\n'
+        f'примеры_моих_фраз: {sample_bits}\n'
+        '\n'
+        '=== История общения за сегодня ===\n'
+        f'последнее_от_собеседника: {last_partner}\n'
+        f'{day_block}\n'
+        '\n'
+        '=== Моё текущее сообщение (продолжи его) ===\n'
+        f'{draft}\n'
+        '\n'
         f'length_target={length_target}\n'
-        f'last_partner_message={last_partner}\n'
-        f'today_chat (recent, me=Я / partner=other):\n{day_block}'
+        'Задача: продолжить моё текущее сообщение выше. '
+        'Верни только продолжение (суффикс) после уже написанного текста.'
     )
     return [
         {'role': 'system', 'content': system},
@@ -393,7 +415,8 @@ def build_completion_messages(
 
 def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
     request_id = str(uuid4())
-    draft = (draft or '').rstrip()
+    # Keep the composer text as-is (including inner newlines); only normalize None.
+    draft = draft if draft is not None else ''
 
     if not getattr(settings, 'AI_COMPLETION_ENABLED', False):
         return {'suggestion': '', 'request_id': request_id, 'disabled': True}
