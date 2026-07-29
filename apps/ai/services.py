@@ -421,7 +421,7 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
     if not getattr(settings, 'AI_COMPLETION_ENABLED', False):
         return {'suggestion': '', 'request_id': request_id, 'disabled': True}
 
-    min_len = int(getattr(settings, 'AI_MIN_DRAFT_LEN', 8))
+    min_len = int(getattr(settings, 'AI_MIN_DRAFT_LEN', 1))
     if len(draft.strip()) < min_len:
         return {'suggestion': '', 'request_id': request_id}
 
