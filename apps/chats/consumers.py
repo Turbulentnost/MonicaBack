@@ -210,6 +210,13 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             'message': event['message'],
         })
 
+    async def chat_message_pinned(self, event):
+        await self._touch_viewing()
+        await self.send_json({
+            'action': 'message.pinned',
+            'message': event['message'],
+        })
+
     async def chat_messages_read(self, event):
         await self._touch_viewing()
         await self.send_json({

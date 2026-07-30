@@ -114,6 +114,15 @@ class Message(models.Model):
         on_delete=models.SET_NULL,
         related_name='deleted_messages',
     )
+    is_pinned = models.BooleanField(default=False, db_index=True)
+    pinned_at = models.DateTimeField(null=True, blank=True)
+    pinned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='pinned_messages',
+    )
 
     class Meta:
         ordering = ['sent_at']

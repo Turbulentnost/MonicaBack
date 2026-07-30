@@ -23,6 +23,7 @@ class MessageSerializer(serializers.ModelSerializer):
             'file_name', 'mime_type', 'file_size', 'attachments',
             'forwarded_from', 'forward_bundle', 'reply_to_summary',
             'sent_at', 'edited_at', 'read_at', 'waveform', 'voice_duration_ms',
+            'is_pinned', 'pinned_at',
         ]
         read_only_fields = fields
 

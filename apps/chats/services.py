@@ -25,6 +25,7 @@ User = get_user_model()
 MESSAGE_EDIT_MAX_DAYS = 7
 GROUP_TITLE_MAX_LEN = 64
 GROUP_ADMIN_ROLES = {ChatParticipantRole.OWNER, ChatParticipantRole.ADMIN}
+MAX_PINNED_MESSAGES = 50
 
 
 def get_chat_history_cache_version(chat_id) -> int:
@@ -650,6 +651,66 @@ def broadcast_message_deleted(chat_id, message_id):
         f'chat_{chat_id}',
         {'type': 'chat.message_deleted', 'message_id': str(message_id)},
     )
+
+
+def broadcast_message_pinned(chat_id, message_payload):
+    channel_layer = get_channel_layer()
+    if not channel_layer:
+        return
+    async_to_sync(channel_layer.group_send)(
+        f'chat_{chat_id}',
+        {'type': 'chat.message_pinned', 'message': message_payload},
+    )
+
+
+def get_pinned_messages(chat, user):
+    return (
+        get_visible_messages(chat, user)
+        .filter(is_pinned=True)
+        .order_by('-pinned_at', '-sent_at')
+    )
+
+
+def pin_message(message, user):
+    if not user_in_chat(message.chat, user):
+        raise PermissionError('Нет доступа к чату')
+    if message.deleted_at:
+        raise ValueError('Сообщение удалено')
+    if message.message_type == MessageType.CALL:
+        raise ValueError('Сообщения о звонках нельзя закреплять')
+    if MessageHidden.objects.filter(user=user, message=message).exists():
+        raise ValueError('Сообщение недоступно')
+    if message.is_pinned:
+        return message
+
+    pinned_count = Message.objects.filter(
+        chat=message.chat,
+        is_pinned=True,
+        deleted_at__isnull=True,
+    ).count()
+    if pinned_count >= MAX_PINNED_MESSAGES:
+        raise ValueError(f'Можно закрепить не больше {MAX_PINNED_MESSAGES} сообщений')
+
+    message.is_pinned = True
+    message.pinned_at = timezone.now()
+    message.pinned_by = user
+    message.save(update_fields=['is_pinned', 'pinned_at', 'pinned_by'])
+    invalidate_chat_history_cache(message.chat_id)
+    return message
+
+
+def unpin_message(message, user):
+    if not user_in_chat(message.chat, user):
+        raise PermissionError('Нет доступа к чату')
+    if not message.is_pinned:
+        return message
+
+    message.is_pinned = False
+    message.pinned_at = None
+    message.pinned_by = None
+    message.save(update_fields=['is_pinned', 'pinned_at', 'pinned_by'])
+    invalidate_chat_history_cache(message.chat_id)
+    return message
 
 
 def broadcast_messages_read(chat_id, message_ids, reader_id):

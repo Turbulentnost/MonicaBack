@@ -16,8 +16,8 @@ class ChatAdmin(admin.ModelAdmin):
 
 @admin.register(Message)
 class MessageAdmin(admin.ModelAdmin):
-    list_display = ('id', 'chat', 'sender', 'message_type', 'sent_at')
-    list_filter = ('message_type',)
+    list_display = ('id', 'chat', 'sender', 'message_type', 'is_pinned', 'sent_at')
+    list_filter = ('message_type', 'is_pinned')
 
 
 @admin.register(CallSession)

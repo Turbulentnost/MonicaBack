@@ -18,6 +18,7 @@ from apps.chats.serializers import (
 )
 from apps.chats.services import (
     add_group_members,
+    broadcast_message_pinned,
     chats_with_participants_prefetch,
     clear_chat_background,
     create_group_chat,
@@ -26,11 +27,14 @@ from apps.chats.services import (
     get_or_create_direct_chat,
     get_or_create_favorites_chat,
     get_participant_background_url,
+    get_pinned_messages,
     get_user_chats,
     get_visible_messages,
+    pin_message,
     remove_group_member,
     serialize_chat_list_item,
     set_chat_background,
+    unpin_message,
     update_group_title,
     upload_chat_files,
 )
@@ -338,6 +342,70 @@ class ChatFilesView(APIView):
         return Response(
             MessageSerializer(messages, many=True, context={'request': request}).data
         )
+
+
+class ChatPinnedMessagesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, chat_id):
+        try:
+            chat = get_user_chats(request.user).get(id=chat_id)
+        except Chat.DoesNotExist:
+            return Response({'detail': 'Чат не найден'}, status=404)
+
+        messages = get_pinned_messages(chat, request.user)
+        return Response(
+            MessageSerializer(messages, many=True, context={'request': request}).data
+        )
+
+
+class ChatMessagePinView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def _get_message(self, request, chat_id, message_id):
+        try:
+            chat = get_user_chats(request.user).get(id=chat_id)
+        except Chat.DoesNotExist:
+            return None, Response({'detail': 'Чат не найден'}, status=404)
+
+        try:
+            message = Message.objects.select_related('sender', 'reply_to__sender').get(
+                id=message_id,
+                chat=chat,
+            )
+        except Message.DoesNotExist:
+            return None, Response({'detail': 'Сообщение не найдено'}, status=404)
+        return message, None
+
+    def post(self, request, chat_id, message_id):
+        message, error = self._get_message(request, chat_id, message_id)
+        if error:
+            return error
+        try:
+            message = pin_message(message, request.user)
+        except PermissionError as exc:
+            return Response({'detail': str(exc)}, status=403)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=400)
+
+        payload = MessageSerializer(message, context={'request': request}).data
+        broadcast_message_pinned(chat_id, payload)
+        return Response(payload, status=status.HTTP_200_OK)
+
+    def delete(self, request, chat_id, message_id):
+        message, error = self._get_message(request, chat_id, message_id)
+        if error:
+            return error
+        try:
+            message = unpin_message(message, request.user)
+        except PermissionError as exc:
+            return Response({'detail': str(exc)}, status=403)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=400)
+
+        payload = MessageSerializer(message, context={'request': request}).data
+        broadcast_message_pinned(chat_id, payload)
+        return Response(payload, status=status.HTTP_200_OK)
 
 
 class ChatBackgroundView(APIView):
