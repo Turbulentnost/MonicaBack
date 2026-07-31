@@ -291,7 +291,9 @@ def retrieve_related_messages(
 
     related: list[tuple[Message, float]] = []
     for row in qs[: max(k * 3, k)]:
-        distance = float(getattr(row, 'distance', 1.0) or 1.0)
+        raw_distance = getattr(row, 'distance', None)
+        # Important: 0.0 is a perfect match — do not treat it as falsy.
+        distance = 1.0 if raw_distance is None else float(raw_distance)
         if distance > limit_distance:
             # Ordered by distance — further rows are worse.
             break
