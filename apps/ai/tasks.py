@@ -53,6 +53,20 @@ def update_user_style(user_id: str, message_id: str):
 
 
 @shared_task
+def embed_and_segment_message(message_id: str):
+    """Embed a chat message and update topic segmentation."""
+    if not getattr(settings, 'AI_EMBEDDING_ENABLED', True):
+        return {'ok': False, 'reason': 'disabled'}
+    from apps.ai.embeddings import embed_and_segment_message as _embed
+
+    try:
+        return _embed(message_id)
+    except Exception:
+        logger.exception('embed_and_segment_message failed message=%s', message_id)
+        return {'ok': False, 'reason': 'exception'}
+
+
+@shared_task
 def analyze_day_partner_styles(user_id: str):
     """After user goes offline — extract/update per-partner communication traits."""
     if not getattr(settings, 'AI_COMPLETION_ENABLED', False):

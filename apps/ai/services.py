@@ -29,7 +29,7 @@ INTENT_CACHE_TTL_SEC = 60
 INTENT_DAY_TAIL_LINES = 20
 INTENT_DRAFT_PREFIX_LEN = 40
 RECENT_FOCUS_TURNS = 3
-EMPTY_INTENT = {'topic': '', 'reply_goal': ''}
+EMPTY_INTENT = {'topic': '', 'reply_goal': '', 'topic_shift': False}
 
 
 def get_or_create_style_profile(user) -> UserStyleProfile:
@@ -352,8 +352,8 @@ def recent_focus_turns(
     return '\n'.join(lines[-max(1, n):])
 
 
-def parse_reply_intent(raw: str) -> dict[str, str]:
-    """Parse `{topic, reply_goal}` JSON from an LLM response; never raise."""
+def parse_reply_intent(raw: str) -> dict:
+    """Parse `{topic, reply_goal, topic_shift}` JSON from an LLM response; never raise."""
     if not raw or not isinstance(raw, str):
         return dict(EMPTY_INTENT)
     try:
@@ -365,7 +365,16 @@ def parse_reply_intent(raw: str) -> dict[str, str]:
             return dict(EMPTY_INTENT)
         topic = str(data.get('topic') or '').strip()[:160]
         reply_goal = str(data.get('reply_goal') or '').strip()[:200]
-        return {'topic': topic, 'reply_goal': reply_goal}
+        shift_raw = data.get('topic_shift', False)
+        if isinstance(shift_raw, str):
+            topic_shift = shift_raw.strip().lower() in ('1', 'true', 'yes', 'да')
+        else:
+            topic_shift = bool(shift_raw)
+        return {
+            'topic': topic,
+            'reply_goal': reply_goal,
+            'topic_shift': topic_shift,
+        }
     except Exception:
         return dict(EMPTY_INTENT)
 
@@ -385,17 +394,23 @@ def infer_reply_intent(
     day_transcript: str,
     draft: str,
     traits_line: str = '',
-) -> dict[str, str]:
+) -> dict:
     """
-    First-pass LLM call: infer conversation topic and the user's reply goal
+    First-pass LLM call: infer conversation topic, reply goal, and topic shift
     before generating a completion suffix.
     """
     cache_key = _intent_cache_key(user_id, chat_id, day_transcript, draft)
     cached = cache.get(cache_key)
     if isinstance(cached, dict) and ('topic' in cached or 'reply_goal' in cached):
+        shift_raw = cached.get('topic_shift', False)
+        if isinstance(shift_raw, str):
+            topic_shift = shift_raw.strip().lower() in ('1', 'true', 'yes', 'да')
+        else:
+            topic_shift = bool(shift_raw)
         return {
             'topic': str(cached.get('topic') or '').strip()[:160],
             'reply_goal': str(cached.get('reply_goal') or '').strip()[:200],
+            'topic_shift': topic_shift,
         }
 
     day_block = _tail_day_transcript(day_transcript)
@@ -409,16 +424,19 @@ def infer_reply_intent(
             'role': 'system',
             'content': (
                 'По последним репликам и черновику автора определи: '
-                '1) topic — о чём сейчас говорят (коротко); '
-                '2) reply_goal — конкретное, что автор допишет в этот черновик. '
+                '1) topic — о чём говорят СЕЙЧАС (коротко, новая тема если сменилась); '
+                '2) reply_goal — конкретное, что автор допишет в этот черновик; '
+                '3) topic_shift — true, если черновик/последние 2–3 реплики ушли '
+                'в другую тему относительно более ранней истории дня. '
                 'reply_goal пиши от лица автора как действие: '
                 '«спросить…», «уточнить…», «объяснить…», «согласиться…», '
                 '«отшутиться…», «рассказать…». '
                 'Нельзя писать мета-цели вроде «понять диалог», '
                 '«разобраться в ситуации», «продолжить обсуждение». '
-                'Опирайся в первую очередь на последние 2–3 реплики и черновик. '
-                'Продолжи JSON со строковыми ключами topic и reply_goal на русском. '
-                'Если данных мало, оставь значения пустыми.'
+                'Опирайся в первую очередь на последние 2–3 реплики и черновик; '
+                'не цепляйся к утренним темам, если разговор уже сменился. '
+                'Продолжи JSON с ключами topic, reply_goal (строки) и topic_shift (bool). '
+                'Если данных мало, оставь строки пустыми и topic_shift=false.'
             ),
         },
         {
@@ -426,11 +444,11 @@ def infer_reply_intent(
             'content': (
                 f'стиль_автора: {traits_line or "недостаточно данных"}\n'
                 f'=== Последние реплики (главный фокус) ===\n{recent_block}\n\n'
-                f'=== История за сегодня ===\n{day_block}\n\n'
+                f'=== Более ранняя история за сегодня ===\n{day_block}\n\n'
                 f'=== Черновик автора (его нужно продолжить) ===\n{draft_text or "(пусто)"}\n\n'
                 'Пример хорошего reply_goal: "уточнить, кого имеют в виду". '
                 'Плохой reply_goal: "попытаться понять, о чем говорят". '
-                'Продолжи JSON: {"topic":"...","reply_goal":"..."}'
+                'Продолжи JSON: {"topic":"...","reply_goal":"...","topic_shift":false}'
             ),
         },
         {'role': 'assistant', 'content': intent_prefill},
@@ -438,7 +456,7 @@ def infer_reply_intent(
     try:
         raw = chat_completion(
             messages,
-            max_tokens=100,
+            max_tokens=120,
             temperature=0.2,
             timeout=20,
             disable_thinking=True,
@@ -502,20 +520,26 @@ def build_completion_messages(
     partner_traits: dict | None = None,
     topic: str = '',
     reply_goal: str = '',
+    related_transcript: str = '',
+    topic_shift: bool = False,
 ) -> list[dict[str, str]]:
     """
     Prompt package for continuation:
     1) how I talk with this partner
     2) inferred topic + reply goal
-    3) today's chat history
-    4) my full current composer text
+    3) active topic history (not full day)
+    4) optional related-by-meaning snippets
+    5) my full current composer text
     → ask to continue that exact text.
+
+    `day_transcript` here is the active-topic transcript (legacy param name).
     """
     traits = traits or {}
     partner_traits = partner_traits or {}
     draft = draft if draft is not None else ''
     topic = (topic or '').strip()
     reply_goal = (reply_goal or '').strip()
+    related_transcript = (related_transcript or '').strip()
 
     traits_bits = []
     for key in ('tone', 'formality', 'emoji', 'length', 'notes'):
@@ -548,12 +572,18 @@ def build_completion_messages(
     }[length_target]
     goal_line = reply_goal or 'закончить мысль по последним репликам'
     topic_line = topic or 'текущий диалог'
+    shift_note = (
+        'Тема недавно сменилась — не возвращайся к предыдущей теме дня. '
+        if topic_shift else ''
+    )
 
     # Keep system compact (thinking models stall on huge system prompts).
     system = (
         'Ты автодополнение в мессенджере. Пишешь ОТ ЛИЦА пользователя. '
         'Главный ориентир — цель_ответа и последние 2–3 реплики; '
-        'общая тема вторична. '
+        'история ниже — только активная тема. '
+        f'{shift_note}'
+        'Игнорируй темы вне активной истории и блока связанных реплик. '
         'Продолжи ИМЕННО текущий черновик — верни только новый суффикс '
         '(без повтора уже написанного, без кавычек, без пояснений, без markdown). '
         'Суффикс должен продвигать цель_ответа и звучать как естественная '
@@ -567,6 +597,7 @@ def build_completion_messages(
         '=== Смысл текущего ответа (приоритет) ===\n'
         f'тема: {topic_line}\n'
         f'цель_ответа: {goal_line}\n'
+        f'topic_shift: {"true" if topic_shift else "false"}\n'
         f'последние_реплики:\n{recent_block}\n'
         f'length_target={length_target}\n'
         '\n'
@@ -585,13 +616,23 @@ def build_completion_messages(
         'Запрещены пустые общие хвосты вроде «это», «что», «ну», «как бы» '
         'без конкретной мысли.'
     )
-    return [
+    messages: list[dict[str, str]] = [
         {'role': 'system', 'content': system},
         {'role': 'user', 'content': style_context},
         *history_messages,
-        {'role': 'user', 'content': focus_nudge},
-        {'role': 'assistant', 'content': draft},
     ]
+    if related_transcript:
+        messages.append({
+            'role': 'user',
+            'content': (
+                '=== Связанные реплики по теме ===\n'
+                f'{related_transcript}\n'
+                'Используй только если помогают цели_ответа; не возвращайся к чужим темам.'
+            ),
+        })
+    messages.append({'role': 'user', 'content': focus_nudge})
+    messages.append({'role': 'assistant', 'content': draft})
+    return messages
 
 
 def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
@@ -612,15 +653,6 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
 
     if not _rate_limit_ok(user.id):
         return {'suggestion': '', 'request_id': request_id, 'rate_limited': True}
-
-    cache_key = _cache_key(user.id, draft, chat_id)
-    cached = cache.get(cache_key)
-    if cached is not None:
-        return {
-            'suggestion': cached,
-            'request_id': request_id,
-            'cached': True,
-        }
 
     samples = select_style_samples(profile, draft)
     _, day_transcript = load_today_messages(chat_id, user)
@@ -655,16 +687,67 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
         draft=draft,
         traits_line=traits_line,
     )
-    length_target = infer_length_target(draft, day_transcript, traits)
+    topic_shift = bool(intent.get('topic_shift'))
+
+    # Active topic window (+ retrieval) instead of dumping the whole day.
+    from apps.ai.embeddings import (
+        get_active_segment,
+        load_segment_messages,
+        messages_to_labeled_transcript,
+        retrieve_related_messages,
+    )
+
+    topic_transcript = day_transcript
+    related_transcript = ''
+    segment_id = ''
+    related_ids: list[str] = []
+    if chat_id:
+        active_segment = get_active_segment(chat_id)
+        segment_id = str(active_segment.id) if active_segment else ''
+        if topic_shift:
+            segment_messages = load_segment_messages(chat_id, user, limit=4)
+        else:
+            segment_messages = load_segment_messages(chat_id, user)
+        topic_transcript = messages_to_labeled_transcript(segment_messages, user) or recent_focus_turns(
+            day_transcript,
+            n=RECENT_FOCUS_TURNS,
+        )
+        exclude_ids = {m.id for m in segment_messages}
+        query_text = f'{recent_focus_turns(topic_transcript)}\n{draft}'.strip()
+        related_messages = retrieve_related_messages(
+            chat_id,
+            user,
+            query_text=query_text,
+            exclude_ids=exclude_ids,
+        )
+        related_ids = [str(m.id) for m in related_messages]
+        related_transcript = messages_to_labeled_transcript(related_messages, user)
+
+    # Cache includes topic/retrieval context so a shift does not reuse old suffixes.
+    context_digest = hashlib.sha256(
+        f'{segment_id}|{",".join(related_ids)}|{int(topic_shift)}'.encode('utf-8')
+    ).hexdigest()[:12]
+    cache_key = f'{_cache_key(user.id, draft, chat_id)}:{context_digest}'
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return {
+            'suggestion': cached,
+            'request_id': request_id,
+            'cached': True,
+        }
+
+    length_target = infer_length_target(draft, topic_transcript, traits)
     messages = build_completion_messages(
         draft,
         samples,
         traits,
-        day_transcript=day_transcript,
+        day_transcript=topic_transcript,
         partner_notes=partner_notes,
         partner_traits=partner_traits,
         topic=intent.get('topic', ''),
         reply_goal=intent.get('reply_goal', ''),
+        related_transcript=related_transcript,
+        topic_shift=topic_shift,
     )
 
     base_tokens = max(int(settings.AI_MAX_TOKENS), 48)

@@ -245,3 +245,82 @@ def chat_completion(
                 parts.append(item.get('text') or '')
         content = ''.join(parts)
     return clean_completion_text(str(content))
+
+
+def embed_texts(texts: list[str], *, timeout: float | None = None) -> list[list[float]]:
+    """
+    Call OpenAI-compatible embeddings via LM Studio proxy.
+    Proxy forces LM_STUDIO_EMBEDDING_MODEL; client model field is ignored.
+    """
+    if not texts:
+        return []
+    cleaned = [str(item or '').replace('\n', ' ').strip() for item in texts]
+    if not any(cleaned):
+        return [[] for _ in cleaned]
+
+    base = (getattr(settings, 'OPENAI_BASE_URL', '') or '').rstrip('/')
+    if not base:
+        raise RuntimeError('OPENAI_BASE_URL is not configured')
+
+    url = f'{base}/embeddings/'
+    payload: dict[str, Any] = {
+        'input': cleaned if len(cleaned) > 1 else cleaned[0],
+        'encoding_format': 'float',
+    }
+    body = json.dumps(payload).encode('utf-8')
+    headers = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+    }
+    api_key = (getattr(settings, 'OPENAI_API_KEY', '') or '').strip()
+    if api_key:
+        headers['Authorization'] = f'Bearer {api_key}'
+
+    request = urllib.request.Request(url, data=body, headers=headers, method='POST')
+    request_timeout = timeout if timeout is not None else settings.AI_REQUEST_TIMEOUT_SEC
+    try:
+        with urllib.request.urlopen(request, timeout=request_timeout) as response:
+            raw = response.read().decode('utf-8')
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode('utf-8', errors='replace')[:500]
+        logger.warning('AI embeddings HTTP %s: %s', exc.code, detail)
+        raise RuntimeError(f'LLM embeddings HTTP {exc.code}') from exc
+    except urllib.error.URLError as exc:
+        logger.warning('AI embeddings network error: %s', exc)
+        raise RuntimeError('LLM embeddings unavailable') from exc
+
+    data = json.loads(raw)
+    items = data.get('data') if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return [[] for _ in cleaned]
+
+    by_index: dict[int, list[float]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            index = int(item.get('index', len(by_index)))
+        except (TypeError, ValueError):
+            index = len(by_index)
+        vector = item.get('embedding')
+        if isinstance(vector, list):
+            by_index[index] = [float(x) for x in vector]
+
+    return [by_index.get(i, []) for i in range(len(cleaned))]
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = 0.0
+    na = 0.0
+    nb = 0.0
+    for x, y in zip(a, b):
+        fx = float(x)
+        fy = float(y)
+        dot += fx * fy
+        na += fx * fx
+        nb += fy * fy
+    if na <= 0 or nb <= 0:
+        return 0.0
+    return dot / ((na ** 0.5) * (nb ** 0.5))

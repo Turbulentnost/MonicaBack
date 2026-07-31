@@ -248,6 +248,14 @@ AI_REQUEST_TIMEOUT_SEC = float(os.getenv('AI_REQUEST_TIMEOUT_SEC', '45'))
 AI_CONTEXT_WINDOW_TOKENS = int(os.getenv('AI_CONTEXT_WINDOW_TOKENS', '125000'))
 AI_CONTEXT_RESERVE_TOKENS = int(os.getenv('AI_CONTEXT_RESERVE_TOKENS', '512'))
 
+# Topic-aware retrieval (embeddings via LM Studio proxy on GPU host)
+AI_EMBEDDING_ENABLED = os.getenv('AI_EMBEDDING_ENABLED', 'True').lower() in ('true', '1', 'yes')
+AI_EMBEDDING_DIMS = int(os.getenv('AI_EMBEDDING_DIMS', '1024'))
+AI_TOPIC_SIM_THRESHOLD = float(os.getenv('AI_TOPIC_SIM_THRESHOLD', '0.45'))
+AI_TOPIC_GAP_MINUTES = int(os.getenv('AI_TOPIC_GAP_MINUTES', '25'))
+AI_RETRIEVAL_TOP_K = int(os.getenv('AI_RETRIEVAL_TOP_K', '8'))
+AI_TOPIC_FALLBACK_MESSAGES = int(os.getenv('AI_TOPIC_FALLBACK_MESSAGES', '12'))
+
 # Isolated LM Studio proxy (/api/lmstudio/…) — usually on the GPU host :8000
 # Endpoints are public (no JWT); upstream may still use LMSTUDIO_UPSTREAM_API_KEY.
 LMSTUDIO_UPSTREAM_BASE_URL = os.getenv(
@@ -255,4 +263,12 @@ LMSTUDIO_UPSTREAM_BASE_URL = os.getenv(
     'http://127.0.0.1:1234/v1',
 ).rstrip('/')
 LMSTUDIO_UPSTREAM_API_KEY = os.getenv('LMSTUDIO_UPSTREAM_API_KEY', 'lm-studio')
+LM_STUDIO_EMBEDDING_MODEL = os.getenv(
+    'LM_STUDIO_EMBEDDING_MODEL',
+    'Content-AI/USER-bge-m3-Q8_0-GGUF',
+)
+LM_STUDIO_EMBEDDING_CONTEXT_LENGTH = int(os.getenv('LM_STUDIO_EMBEDDING_CONTEXT_LENGTH', '8192'))
+LM_STUDIO_AUTO_LOAD_MODEL = os.getenv('LM_STUDIO_AUTO_LOAD_MODEL', 'True').lower() in (
+    'true', '1', 'yes',
+)
 

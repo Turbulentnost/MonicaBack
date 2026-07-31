@@ -434,8 +434,9 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         if getattr(message, 'message_type', None) != MessageType.TEXT:
             return
         try:
-            from apps.ai.tasks import update_user_style
+            from apps.ai.tasks import embed_and_segment_message, update_user_style
             update_user_style.delay(str(self.user.id), str(message.id))
+            embed_and_segment_message.delay(str(message.id))
         except Exception:
             # Learning must never break message delivery
             pass

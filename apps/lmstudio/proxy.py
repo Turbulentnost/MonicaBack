@@ -15,8 +15,31 @@ def upstream_base() -> str:
     return (getattr(settings, 'LMSTUDIO_UPSTREAM_BASE_URL', '') or 'http://127.0.0.1:1234/v1').rstrip('/')
 
 
+def upstream_host() -> str:
+    """LM Studio root (without trailing /v1) for native REST like /api/v1/models/load."""
+    base = upstream_base()
+    if base.endswith('/v1'):
+        return base[:-3].rstrip('/') or 'http://127.0.0.1:1234'
+    return base
+
+
 def upstream_api_key() -> str:
     return (getattr(settings, 'LMSTUDIO_UPSTREAM_API_KEY', '') or 'lm-studio').strip()
+
+
+def embedding_model() -> str:
+    return (
+        getattr(settings, 'LM_STUDIO_EMBEDDING_MODEL', '')
+        or 'Content-AI/USER-bge-m3-Q8_0-GGUF'
+    ).strip()
+
+
+def embedding_context_length() -> int:
+    return int(getattr(settings, 'LM_STUDIO_EMBEDDING_CONTEXT_LENGTH', 8192))
+
+
+def auto_load_enabled() -> bool:
+    return bool(getattr(settings, 'LM_STUDIO_AUTO_LOAD_MODEL', True))
 
 
 def _request_json(
@@ -25,8 +48,9 @@ def _request_json(
     *,
     payload: dict[str, Any] | None = None,
     timeout: float | None = None,
+    absolute_url: str | None = None,
 ) -> tuple[int, Any]:
-    url = f'{upstream_base()}{path}'
+    url = absolute_url or f'{upstream_base()}{path}'
     headers = {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
@@ -62,8 +86,38 @@ def _request_json(
         return 503, {'detail': 'LM Studio upstream unavailable'}
 
 
+def ensure_embedding_model_loaded() -> tuple[int, Any] | None:
+    """Optionally load the embedding model into LM Studio (not the chat model)."""
+    if not auto_load_enabled():
+        return None
+    model = embedding_model()
+    if not model:
+        return None
+    url = f'{upstream_host()}/api/v1/models/load'
+    payload = {
+        'model': model,
+        'context_length': embedding_context_length(),
+    }
+    status, body = _request_json(
+        'POST',
+        '/api/v1/models/load',
+        payload=payload,
+        timeout=120,
+        absolute_url=url,
+    )
+    if status >= 400:
+        logger.warning(
+            'LM Studio embedding auto-load failed model=%s status=%s body=%s',
+            model,
+            status,
+            body,
+        )
+    return status, body
+
+
 def health() -> tuple[int, dict[str, Any]]:
     status, body = _request_json('GET', '/models', timeout=8)
+    embed_id = embedding_model()
     if status == 200:
         models = body.get('data') if isinstance(body, dict) else None
         count = len(models) if isinstance(models, list) else 0
@@ -71,12 +125,14 @@ def health() -> tuple[int, dict[str, Any]]:
             'status': 'ok',
             'upstream': upstream_base(),
             'model': FORCED_MODEL,
+            'embedding_model': embed_id,
             'models_count': count,
         }
     return status, {
         'status': 'error',
         'upstream': upstream_base(),
         'model': FORCED_MODEL,
+        'embedding_model': embed_id,
         'detail': body.get('detail') if isinstance(body, dict) else body,
     }
 
@@ -130,6 +186,39 @@ def chat_completions(payload: dict[str, Any]) -> tuple[int, Any]:
     return _request_json(
         'POST',
         '/chat/completions',
+        payload=upstream_payload,
+        timeout=float(getattr(settings, 'AI_REQUEST_TIMEOUT_SEC', 45)),
+    )
+
+
+def embeddings(payload: dict[str, Any]) -> tuple[int, Any]:
+    """Proxy embeddings; always force LM_STUDIO_EMBEDDING_MODEL (ignore client model)."""
+    if not isinstance(payload, dict):
+        return 400, {'detail': 'JSON object expected'}
+
+    raw_input = payload.get('input')
+    if isinstance(raw_input, str):
+        if not raw_input.strip():
+            return 400, {'detail': 'input must be a non-empty string or array'}
+    elif isinstance(raw_input, list):
+        if not raw_input:
+            return 400, {'detail': 'input must be a non-empty string or array'}
+        for index, item in enumerate(raw_input):
+            if not isinstance(item, str):
+                return 400, {'detail': f'input[{index}] must be a string'}
+    else:
+        return 400, {'detail': 'input must be a string or array of strings'}
+
+    ensure_embedding_model_loaded()
+
+    upstream_payload: dict[str, Any] = {
+        'model': embedding_model(),
+        'input': raw_input,
+        'encoding_format': payload.get('encoding_format') or 'float',
+    }
+    return _request_json(
+        'POST',
+        '/embeddings',
         payload=upstream_payload,
         timeout=float(getattr(settings, 'AI_REQUEST_TIMEOUT_SEC', 45)),
     )

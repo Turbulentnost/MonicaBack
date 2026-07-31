@@ -2,7 +2,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.lmstudio.proxy import chat_completions, health, list_models
+from apps.lmstudio.proxy import chat_completions, embeddings, health, list_models
 
 
 class LmStudioHealthView(APIView):
@@ -29,4 +29,13 @@ class LmStudioChatCompletionsView(APIView):
 
     def post(self, request):
         status_code, body = chat_completions(request.data if isinstance(request.data, dict) else {})
+        return Response(body, status=status_code)
+
+
+class LmStudioEmbeddingsView(APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        status_code, body = embeddings(request.data if isinstance(request.data, dict) else {})
         return Response(body, status=status_code)

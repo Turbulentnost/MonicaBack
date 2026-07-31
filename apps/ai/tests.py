@@ -3,6 +3,7 @@ from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient
 
 from apps.ai.client import (
+    cosine_similarity,
     estimate_messages_tokens,
     fit_messages_to_token_budget,
     should_continue_final_message,
@@ -100,6 +101,7 @@ class StyleServicesTests(TestCase):
         self.assertIn('length_target=', msgs[1]['content'])
         self.assertIn('цель_ответа', msgs[0]['content'])
         self.assertIn('последние 2–3 реплики', msgs[0]['content'])
+        self.assertIn('активная тема', msgs[0]['content'])
         self.assertEqual(
             msgs[2:-2],
             [
@@ -113,6 +115,27 @@ class StyleServicesTests(TestCase):
         self.assertIn('можешь завтра в 5?', msgs[-2]['content'])
         self.assertEqual(msgs[-1]['role'], 'assistant')
         self.assertEqual(msgs[-1]['content'], draft)
+
+    def test_build_completion_messages_topic_shift_and_related(self):
+        draft = 'давай лучше про ужин'
+        msgs = build_completion_messages(
+            draft,
+            [],
+            {},
+            day_transcript='Собеседник: что на ужин?\nЯ: не знаю',
+            related_transcript='Собеседник: вчера тоже про еду говорили',
+            topic='ужин',
+            reply_goal='предложить пиццу',
+            topic_shift=True,
+        )
+        self.assertIn('Тема недавно сменилась', msgs[0]['content'])
+        self.assertIn('topic_shift: true', msgs[1]['content'])
+        related_blocks = [m for m in msgs if 'Связанные реплики по теме' in m.get('content', '')]
+        self.assertEqual(len(related_blocks), 1)
+        self.assertIn('вчера тоже про еду', related_blocks[0]['content'])
+        joined = '\n'.join(m.get('content', '') for m in msgs)
+        self.assertNotIn('деплой', joined)
+        self.assertIn('что на ужин?', joined)
 
     def test_recent_focus_turns_takes_last_n(self):
         day = (
@@ -130,22 +153,64 @@ class StyleServicesTests(TestCase):
     def test_parse_reply_intent_valid_and_garbage(self):
         self.assertEqual(
             parse_reply_intent('{"topic":"деплой Моники","reply_goal":"объяснить что запушил"}'),
-            {'topic': 'деплой Моники', 'reply_goal': 'объяснить что запушил'},
+            {'topic': 'деплой Моники', 'reply_goal': 'объяснить что запушил', 'topic_shift': False},
         )
         self.assertEqual(
-            parse_reply_intent('Вот ответ:\n```json\n{"topic":"а","reply_goal":"б"}\n```'),
-            {'topic': 'а', 'reply_goal': 'б'},
+            parse_reply_intent(
+                'Вот ответ:\n```json\n{"topic":"а","reply_goal":"б","topic_shift":true}\n```'
+            ),
+            {'topic': 'а', 'reply_goal': 'б', 'topic_shift': True},
         )
         # Prefill continuation suffix reconstructed into a full JSON object.
         self.assertEqual(
             parse_reply_intent(
                 '{"topic":"дружеский разговор","reply_goal":"продолжить с юмором"}'
             ),
-            {'topic': 'дружеский разговор', 'reply_goal': 'продолжить с юмором'},
+            {
+                'topic': 'дружеский разговор',
+                'reply_goal': 'продолжить с юмором',
+                'topic_shift': False,
+            },
         )
-        self.assertEqual(parse_reply_intent(''), {'topic': '', 'reply_goal': ''})
-        self.assertEqual(parse_reply_intent('not json at all'), {'topic': '', 'reply_goal': ''})
-        self.assertEqual(parse_reply_intent('{bad'), {'topic': '', 'reply_goal': ''})
+        self.assertEqual(
+            parse_reply_intent(''),
+            {'topic': '', 'reply_goal': '', 'topic_shift': False},
+        )
+        self.assertEqual(
+            parse_reply_intent('not json at all'),
+            {'topic': '', 'reply_goal': '', 'topic_shift': False},
+        )
+        self.assertEqual(
+            parse_reply_intent('{bad'),
+            {'topic': '', 'reply_goal': '', 'topic_shift': False},
+        )
+
+    def test_cosine_similarity_and_topic_boundary_helper(self):
+        from apps.ai.embeddings import should_start_new_topic
+        from types import SimpleNamespace
+
+        self.assertGreater(cosine_similarity([1, 0], [1, 0]), 0.99)
+        self.assertLess(cosine_similarity([1, 0], [0, 1]), 0.1)
+
+        prev_msg = SimpleNamespace(created_at=None)
+        cur_msg = SimpleNamespace(created_at=None)
+        prev_emb = SimpleNamespace(embedding=[1.0, 0.0])
+        self.assertFalse(
+            should_start_new_topic(
+                previous=prev_emb,
+                previous_message=prev_msg,
+                current_message=cur_msg,
+                current_vector=[0.95, 0.05],
+            )
+        )
+        self.assertTrue(
+            should_start_new_topic(
+                previous=prev_emb,
+                previous_message=prev_msg,
+                current_message=cur_msg,
+                current_vector=[0.0, 1.0],
+            )
+        )
 
     def test_day_transcript_roles_and_consecutive_messages(self):
         transcript = (
