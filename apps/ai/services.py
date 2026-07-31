@@ -33,11 +33,21 @@ RELATED_PREVIEW_MAX_LEN = 120
 EMPTY_INTENT = {'topic': '', 'reply_goal': '', 'topic_shift': False}
 
 
-def serialize_related_messages(messages, user=None) -> list[dict]:
-    """Short previews of retrieval hits for the composer UI panel."""
+def serialize_related_messages(hits, user=None) -> list[dict]:
+    """Short previews of retrieval hits for the composer UI panel.
+
+    ``hits`` is a sequence of Message or (Message, distance) pairs,
+    already ordered by ascending cosine distance (best first).
+    """
     current_user_id = str(getattr(user, 'id', '') or '')
     payload = []
-    for msg in messages or []:
+    for item in hits or []:
+        if isinstance(item, (tuple, list)) and len(item) >= 1:
+            msg = item[0]
+            distance = float(item[1]) if len(item) > 1 else None
+        else:
+            msg = item
+            distance = None
         text = (getattr(msg, 'content', None) or '').strip()
         text = re.sub(r'\s+', ' ', text)
         if not text:
@@ -55,12 +65,16 @@ def serialize_related_messages(messages, user=None) -> list[dict]:
                 or getattr(sender, 'first_name', None)
                 or 'Собеседник'
             )
+        score = None
+        if distance is not None:
+            score = round(max(0.0, min(1.0, 1.0 - distance)), 4)
         payload.append({
             'id': str(msg.id),
             'text': text,
             'sent_at': sent_at.isoformat() if sent_at else None,
             'is_mine': mine,
             'sender_label': str(sender_label),
+            'score': score,
         })
     return payload
 
@@ -747,17 +761,25 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
             n=RECENT_FOCUS_TURNS,
         )
         exclude_ids = {m.id for m in segment_messages}
-        query_text = f'{recent_focus_turns(topic_transcript)}\n{draft}'.strip()
+        # Prefer draft meaning; only pad short drafts with a tiny topic tail.
+        draft_query = (draft or '').strip()
+        if len(draft_query) < 12:
+            query_text = f'{recent_focus_turns(topic_transcript, n=2)}\n{draft_query}'.strip()
+        else:
+            query_text = draft_query
         # Semantic retrieval is scoped to this chat only (never other dialogs).
-        related_messages = retrieve_related_messages(
+        related_hits = retrieve_related_messages(
             chat_id,
             user,
             query_text=query_text,
             exclude_ids=exclude_ids,
         )
+        related_messages = [m for m, _dist in related_hits]
         related_ids = [str(m.id) for m in related_messages]
         related_transcript = messages_to_labeled_transcript(related_messages, user)
-    related_payload = serialize_related_messages(related_messages, user)
+    else:
+        related_hits = []
+    related_payload = serialize_related_messages(related_hits, user)
 
     # Cache includes topic/retrieval context so a shift does not reuse old suffixes.
     context_digest = hashlib.sha256(

@@ -341,7 +341,7 @@ class ChatScopedRetrievalTests(TestCase):
                 self.user,
                 query_text='деплой',
             )
-        ids = {str(m.id) for m in related}
+        ids = {str(m.id) for m, _dist in related}
         self.assertIn(str(self.msg_a.id), ids)
         self.assertNotIn(str(self.msg_b.id), ids)
 
@@ -363,6 +363,73 @@ class ChatScopedRetrievalTests(TestCase):
                 query_text='деплой',
             )
         self.assertEqual(related, [])
+
+    def test_retrieve_filters_weak_distance_and_keeps_score_order(self):
+        from datetime import timedelta
+        from unittest.mock import MagicMock, patch
+
+        from django.utils import timezone
+
+        from apps.ai.embeddings import retrieve_related_messages
+        from apps.ai.models import MessageEmbedding
+        from apps.chats.models import Message, MessageType
+
+        older = Message.objects.create(
+            chat=self.chat_a,
+            sender=self.partner_a,
+            content='старое близкое по смыслу',
+            message_type=MessageType.TEXT,
+        )
+        Message.objects.filter(id=older.id).update(
+            sent_at=timezone.now() - timedelta(days=3),
+        )
+        older.refresh_from_db()
+        newer_weak = Message.objects.create(
+            chat=self.chat_a,
+            sender=self.partner_a,
+            content='новое но слабое совпадение',
+            message_type=MessageType.TEXT,
+        )
+        MessageEmbedding.objects.create(
+            message=older,
+            chat=self.chat_a,
+            user=self.partner_a,
+            embedding=[1.0] + [0.0] * 1023,
+            content_hash='older',
+        )
+        MessageEmbedding.objects.create(
+            message=newer_weak,
+            chat=self.chat_a,
+            user=self.partner_a,
+            embedding=[0.0, 1.0] + [0.0] * 1022,
+            content_hash='weak',
+        )
+
+        # Fake queryset rows: close hit first, weak second (as CosineDistance would).
+        close_row = MagicMock(distance=0.1, message=older)
+        weak_row = MagicMock(distance=0.9, message=newer_weak)
+        mock_qs = MagicMock()
+        mock_qs.filter.return_value = mock_qs
+        mock_qs.select_related.return_value = mock_qs
+        mock_qs.annotate.return_value = mock_qs
+        mock_qs.order_by.return_value = mock_qs
+        mock_qs.exclude.return_value = mock_qs
+        mock_qs.__getitem__.return_value = [close_row, weak_row]
+
+        with (
+            patch('apps.ai.embeddings.embed_texts', return_value=[[1.0] + [0.0] * 1023]),
+            patch('apps.ai.embeddings.MessageEmbedding.objects', mock_qs),
+        ):
+            related = retrieve_related_messages(
+                self.chat_a.id,
+                self.user,
+                query_text='старое близкое',
+                max_distance=0.55,
+            )
+
+        self.assertEqual(len(related), 1)
+        self.assertEqual(str(related[0][0].id), str(older.id))
+        self.assertAlmostEqual(related[0][1], 0.1)
 
     def test_load_segment_rejects_non_member(self):
         from apps.ai.embeddings import load_segment_messages
@@ -406,6 +473,9 @@ class ChatScopedRetrievalTests(TestCase):
             self.assertTrue(item['text'])
             self.assertIn('sender_label', item)
             self.assertIn('is_mine', item)
+            self.assertIn('sent_at', item)
+            self.assertIn('score', item)
+            self.assertIsNotNone(item['score'])
         hit = next(item for item in result['related_messages'] if item['id'] == str(self.msg_a.id))
         self.assertFalse(hit['is_mine'])
         self.assertEqual(hit['sender_label'], 'partnera')

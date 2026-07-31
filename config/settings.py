@@ -253,7 +253,8 @@ AI_EMBEDDING_ENABLED = os.getenv('AI_EMBEDDING_ENABLED', 'True').lower() in ('tr
 AI_EMBEDDING_DIMS = int(os.getenv('AI_EMBEDDING_DIMS', '1024'))
 AI_TOPIC_SIM_THRESHOLD = float(os.getenv('AI_TOPIC_SIM_THRESHOLD', '0.45'))
 AI_TOPIC_GAP_MINUTES = int(os.getenv('AI_TOPIC_GAP_MINUTES', '25'))
-AI_RETRIEVAL_TOP_K = int(os.getenv('AI_RETRIEVAL_TOP_K', '8'))
+AI_RETRIEVAL_TOP_K = int(os.getenv('AI_RETRIEVAL_TOP_K', '5'))
+AI_RETRIEVAL_MAX_DISTANCE = float(os.getenv('AI_RETRIEVAL_MAX_DISTANCE', '0.55'))
 AI_TOPIC_FALLBACK_MESSAGES = int(os.getenv('AI_TOPIC_FALLBACK_MESSAGES', '12'))
 
 # Isolated LM Studio proxy (/api/lmstudio/…) — usually on the GPU host :8000

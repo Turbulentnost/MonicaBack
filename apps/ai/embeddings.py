@@ -243,10 +243,14 @@ def retrieve_related_messages(
     query_text: str,
     exclude_ids: set | None = None,
     top_k: int | None = None,
-) -> list[Message]:
+    max_distance: float | None = None,
+) -> list[tuple[Message, float]]:
     """
     Semantic nearest neighbors for AI complete — strictly within this chat only.
     Other dialogs of the same user are never searched.
+
+    Returns (message, cosine_distance) pairs ordered by ascending distance
+    (best semantic match first). Weak hits above max_distance are dropped.
     """
     if not getattr(settings, 'AI_EMBEDDING_ENABLED', True):
         return []
@@ -256,7 +260,12 @@ def retrieve_related_messages(
     if not query_text:
         return []
 
-    k = int(top_k if top_k is not None else getattr(settings, 'AI_RETRIEVAL_TOP_K', 8))
+    k = int(top_k if top_k is not None else getattr(settings, 'AI_RETRIEVAL_TOP_K', 5))
+    limit_distance = float(
+        max_distance
+        if max_distance is not None
+        else getattr(settings, 'AI_RETRIEVAL_MAX_DISTANCE', 0.55)
+    )
     exclude_ids = exclude_ids or set()
     chat_id_str = str(chat_id)
 
@@ -280,8 +289,12 @@ def retrieve_related_messages(
     if exclude_ids:
         qs = qs.exclude(message_id__in=list(exclude_ids))
 
-    related = []
-    for row in qs[: max(k * 2, k)]:
+    related: list[tuple[Message, float]] = []
+    for row in qs[: max(k * 3, k)]:
+        distance = float(getattr(row, 'distance', 1.0) or 1.0)
+        if distance > limit_distance:
+            # Ordered by distance — further rows are worse.
+            break
         message = row.message
         if not message or message.deleted_at:
             continue
@@ -291,9 +304,8 @@ def retrieve_related_messages(
             continue
         if str(message.id) in {str(x) for x in exclude_ids}:
             continue
-        related.append(message)
+        related.append((message, distance))
         if len(related) >= k:
             break
 
-    related.sort(key=lambda m: getattr(m, 'sent_at', None) or timezone.now())
     return related
