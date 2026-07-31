@@ -404,3 +404,8 @@ class ChatScopedRetrievalTests(TestCase):
         for item in result['related_messages']:
             self.assertIn('text', item)
             self.assertTrue(item['text'])
+            self.assertIn('sender_label', item)
+            self.assertIn('is_mine', item)
+        hit = next(item for item in result['related_messages'] if item['id'] == str(self.msg_a.id))
+        self.assertFalse(hit['is_mine'])
+        self.assertEqual(hit['sender_label'], 'partnera')

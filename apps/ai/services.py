@@ -33,8 +33,9 @@ RELATED_PREVIEW_MAX_LEN = 120
 EMPTY_INTENT = {'topic': '', 'reply_goal': '', 'topic_shift': False}
 
 
-def serialize_related_messages(messages) -> list[dict]:
+def serialize_related_messages(messages, user=None) -> list[dict]:
     """Short previews of retrieval hits for the composer UI panel."""
+    current_user_id = str(getattr(user, 'id', '') or '')
     payload = []
     for msg in messages or []:
         text = (getattr(msg, 'content', None) or '').strip()
@@ -44,10 +45,22 @@ def serialize_related_messages(messages) -> list[dict]:
         if len(text) > RELATED_PREVIEW_MAX_LEN:
             text = f'{text[:RELATED_PREVIEW_MAX_LEN].rstrip()}…'
         sent_at = getattr(msg, 'sent_at', None)
+        sender = getattr(msg, 'sender', None)
+        mine = bool(current_user_id and sender and str(sender.id) == current_user_id)
+        if mine:
+            sender_label = 'Вы'
+        else:
+            sender_label = (
+                getattr(sender, 'nickname', None)
+                or getattr(sender, 'first_name', None)
+                or 'Собеседник'
+            )
         payload.append({
             'id': str(msg.id),
             'text': text,
             'sent_at': sent_at.isoformat() if sent_at else None,
+            'is_mine': mine,
+            'sender_label': str(sender_label),
         })
     return payload
 
@@ -744,7 +757,7 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
         )
         related_ids = [str(m.id) for m in related_messages]
         related_transcript = messages_to_labeled_transcript(related_messages, user)
-    related_payload = serialize_related_messages(related_messages)
+    related_payload = serialize_related_messages(related_messages, user)
 
     # Cache includes topic/retrieval context so a shift does not reuse old suffixes.
     context_digest = hashlib.sha256(
