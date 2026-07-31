@@ -14,6 +14,7 @@ from apps.ai.services import (
     build_forced_continuation,
     day_transcript_to_messages,
     infer_length_target,
+    parse_reply_intent,
     sanitize_suggestion,
     select_style_samples,
     strip_draft_prefix,
@@ -86,9 +87,15 @@ class StyleServicesTests(TestCase):
             {'tone': 'неформальный'},
             day_transcript=day,
             partner_notes='общаемся коротко',
+            topic='встреча завтра',
+            reply_goal='подтвердить время',
         )
         self.assertIn('Как я общаюсь с этим пользователем', msgs[1]['content'])
+        self.assertIn('Смысл текущего ответа', msgs[1]['content'])
+        self.assertIn('тема: встреча завтра', msgs[1]['content'])
+        self.assertIn('цель_ответа: подтвердить время', msgs[1]['content'])
         self.assertIn('length_target=', msgs[1]['content'])
+        self.assertIn('цель ответа', msgs[0]['content'].lower())
         self.assertEqual(
             msgs[2:-1],
             [
@@ -99,6 +106,19 @@ class StyleServicesTests(TestCase):
         )
         self.assertEqual(msgs[-1]['role'], 'assistant')
         self.assertEqual(msgs[-1]['content'], draft)
+
+    def test_parse_reply_intent_valid_and_garbage(self):
+        self.assertEqual(
+            parse_reply_intent('{"topic":"деплой Моники","reply_goal":"объяснить что запушил"}'),
+            {'topic': 'деплой Моники', 'reply_goal': 'объяснить что запушил'},
+        )
+        self.assertEqual(
+            parse_reply_intent('Вот ответ:\n```json\n{"topic":"а","reply_goal":"б"}\n```'),
+            {'topic': 'а', 'reply_goal': 'б'},
+        )
+        self.assertEqual(parse_reply_intent(''), {'topic': '', 'reply_goal': ''})
+        self.assertEqual(parse_reply_intent('not json at all'), {'topic': '', 'reply_goal': ''})
+        self.assertEqual(parse_reply_intent('{bad'), {'topic': '', 'reply_goal': ''})
 
     def test_day_transcript_roles_and_consecutive_messages(self):
         transcript = (

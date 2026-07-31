@@ -25,6 +25,10 @@ MAX_DAY_CHARS = 4500
 # How much of today's chat we put into the completion prompt (recent tail).
 COMPLETION_DAY_CHARS = 1800
 COMPLETION_DAY_LINES = 36
+INTENT_CACHE_TTL_SEC = 60
+INTENT_DAY_TAIL_LINES = 20
+INTENT_DRAFT_PREFIX_LEN = 40
+EMPTY_INTENT = {'topic': '', 'reply_goal': ''}
 
 
 def get_or_create_style_profile(user) -> UserStyleProfile:
@@ -335,6 +339,94 @@ def day_transcript_to_messages(day_transcript: str) -> list[dict[str, str]]:
     return result
 
 
+def parse_reply_intent(raw: str) -> dict[str, str]:
+    """Parse `{topic, reply_goal}` JSON from an LLM response; never raise."""
+    if not raw or not isinstance(raw, str):
+        return dict(EMPTY_INTENT)
+    try:
+        match = re.search(r'\{[\s\S]*\}', raw)
+        if not match:
+            return dict(EMPTY_INTENT)
+        data = json.loads(match.group(0))
+        if not isinstance(data, dict):
+            return dict(EMPTY_INTENT)
+        topic = str(data.get('topic') or '').strip()[:160]
+        reply_goal = str(data.get('reply_goal') or '').strip()[:200]
+        return {'topic': topic, 'reply_goal': reply_goal}
+    except Exception:
+        return dict(EMPTY_INTENT)
+
+
+def _intent_cache_key(user_id, chat_id, day_transcript: str, draft: str) -> str:
+    lines = [ln.strip() for ln in (day_transcript or '').splitlines() if ln.strip()]
+    day_tail = '\n'.join(lines[-INTENT_DAY_TAIL_LINES:])
+    draft_prefix = (draft or '')[:INTENT_DRAFT_PREFIX_LEN]
+    digest = hashlib.sha256(f'{day_tail}\n---\n{draft_prefix}'.encode('utf-8')).hexdigest()[:16]
+    return f'ai:intent:{user_id}:{chat_id or "none"}:{digest}'
+
+
+def infer_reply_intent(
+    *,
+    user_id,
+    chat_id: str | None,
+    day_transcript: str,
+    draft: str,
+    traits_line: str = '',
+) -> dict[str, str]:
+    """
+    First-pass LLM call: infer conversation topic and the user's reply goal
+    before generating a completion suffix.
+    """
+    cache_key = _intent_cache_key(user_id, chat_id, day_transcript, draft)
+    cached = cache.get(cache_key)
+    if isinstance(cached, dict) and ('topic' in cached or 'reply_goal' in cached):
+        return {
+            'topic': str(cached.get('topic') or '').strip()[:160],
+            'reply_goal': str(cached.get('reply_goal') or '').strip()[:200],
+        }
+
+    day_block = _tail_day_transcript(day_transcript)
+    draft_text = draft if draft is not None else ''
+    messages = [
+        {
+            'role': 'system',
+            'content': (
+                'По сегодняшней переписке и черновику пользователя определи: '
+                '1) тему текущего диалога; '
+                '2) цель следующего ответа — что пользователь хочет сказать или '
+                'объяснить дальше, продолжая именно этот черновик. '
+                'Ответь одним JSON-объектом без markdown со строковыми ключами '
+                'topic и reply_goal. Каждое значение — одна короткая фраза на русском. '
+                'Если данных мало, верни пустые строки.'
+            ),
+        },
+        {
+            'role': 'user',
+            'content': (
+                f'стиль_пользователя: {traits_line or "недостаточно данных"}\n'
+                f'=== История за сегодня ===\n{day_block}\n\n'
+                f'=== Черновик пользователя ===\n{draft_text or "(пусто)"}\n\n'
+                'Верни JSON: {"topic":"...","reply_goal":"..."}'
+            ),
+        },
+    ]
+    try:
+        raw = chat_completion(
+            messages,
+            max_tokens=80,
+            temperature=0.2,
+            timeout=20,
+            disable_thinking=True,
+        )
+        intent = parse_reply_intent(raw)
+    except Exception:
+        logger.exception('AI intent inference failed user=%s chat=%s', user_id, chat_id)
+        intent = dict(EMPTY_INTENT)
+
+    cache.set(cache_key, intent, timeout=INTENT_CACHE_TTL_SEC)
+    return intent
+
+
 def infer_length_target(draft: str, day_transcript: str = '', traits: dict | None = None) -> str:
     """Hint for the model: short / medium / long continuation."""
     draft = draft or ''
@@ -380,17 +472,22 @@ def build_completion_messages(
     day_transcript: str = '',
     partner_notes: str = '',
     partner_traits: dict | None = None,
+    topic: str = '',
+    reply_goal: str = '',
 ) -> list[dict[str, str]]:
     """
     Prompt package for continuation:
     1) how I talk with this partner
-    2) today's chat history
-    3) my full current composer text
+    2) inferred topic + reply goal
+    3) today's chat history
+    4) my full current composer text
     → ask to continue that exact text.
     """
     traits = traits or {}
     partner_traits = partner_traits or {}
     draft = draft if draft is not None else ''
+    topic = (topic or '').strip()
+    reply_goal = (reply_goal or '').strip()
 
     traits_bits = []
     for key in ('tone', 'formality', 'emoji', 'length', 'notes'):
@@ -424,10 +521,13 @@ def build_completion_messages(
     # Keep system compact (thinking models stall on huge system prompts).
     system = (
         'Ты автодополнение в мессенджере. Пишешь ОТ ЛИЦА пользователя. '
-        'Тебе даны: стиль общения с этим собеседником, переписка за сегодня '
-        'и полное текущее сообщение из поля ввода. '
-        'Продолжи ИМЕННО текущее сообщение — верни только новый суффикс '
+        'Тебе даны: стиль общения с этим собеседником, тема диалога, '
+        'цель текущего ответа, переписка за сегодня и полное текущее сообщение '
+        'из поля ввода. '
+        'Сначала опирайся на тему и цель ответа, затем продолжи ИМЕННО текущее '
+        'сообщение — верни только новый суффикс '
         '(без повтора уже написанного, без кавычек, без пояснений, без markdown). '
+        'Цель ответа — что дописать в этот черновик, а не отдельное новое сообщение. '
         f'Длина: {length_rule}. '
         'История ниже передана реальными ролями: user — собеседник, '
         'assistant — автор текущего черновика. '
@@ -439,8 +539,13 @@ def build_completion_messages(
         f'общий_стиль: {traits_line}\n'
         f'стиль_с_этим_собеседником: {partner_line or "пока нет"}\n'
         f'примеры_моих_фраз: {sample_bits}\n'
+        '\n'
+        '=== Смысл текущего ответа ===\n'
+        f'тема: {topic or "не определена"}\n'
+        f'цель_ответа: {reply_goal or "не определена"}\n'
         f'length_target={length_target}\n'
-        'После истории идёт новый полный черновик автора. Продолжи именно его.'
+        'После истории идёт новый полный черновик автора. Продолжи именно его, '
+        'держась темы и цели ответа.'
     )
     return [
         {'role': 'system', 'content': system},
@@ -497,6 +602,20 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
             pass
 
     traits = profile.traits if isinstance(profile.traits, dict) else {}
+    traits_bits = []
+    for key in ('tone', 'formality', 'emoji', 'length', 'notes'):
+        value = traits.get(key)
+        if value:
+            traits_bits.append(f'{key}: {value}')
+    traits_line = '; '.join(traits_bits) if traits_bits else ''
+
+    intent = infer_reply_intent(
+        user_id=user.id,
+        chat_id=chat_id,
+        day_transcript=day_transcript,
+        draft=draft,
+        traits_line=traits_line,
+    )
     length_target = infer_length_target(draft, day_transcript, traits)
     messages = build_completion_messages(
         draft,
@@ -505,6 +624,8 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
         day_transcript=day_transcript,
         partner_notes=partner_notes,
         partner_traits=partner_traits,
+        topic=intent.get('topic', ''),
+        reply_goal=intent.get('reply_goal', ''),
     )
 
     base_tokens = max(int(settings.AI_MAX_TOKENS), 48)
