@@ -376,3 +376,31 @@ class ChatScopedRetrievalTests(TestCase):
         )
         self.assertEqual(load_segment_messages(self.chat_a.id, stranger), [])
         self.assertTrue(load_segment_messages(self.chat_a.id, self.user))
+
+    def test_complete_returns_related_messages(self):
+        from unittest.mock import patch
+
+        from apps.ai.services import complete_draft
+
+        UserStyleProfile.objects.get_or_create(user=self.user, defaults={'enabled': True})
+        with (
+            patch(
+                'apps.ai.services.infer_reply_intent',
+                return_value={'topic': 'деплой', 'reply_goal': 'ответить', 'topic_shift': False},
+            ),
+            patch('apps.ai.embeddings.embed_texts', return_value=[[1.0] + [0.0] * 1023]),
+            patch('apps.ai.embeddings.load_segment_messages', return_value=[]),
+            patch('apps.ai.embeddings.get_active_segment', return_value=None),
+            patch('apps.ai.services.chat_completion', return_value=' на прод'),
+            patch('apps.ai.services.load_today_messages', return_value=([], '')),
+            patch('apps.ai.services._rate_limit_ok', return_value=True),
+        ):
+            result = complete_draft(self.user, 'как', chat_id=str(self.chat_a.id))
+
+        self.assertIn('related_messages', result)
+        ids = {item['id'] for item in result['related_messages']}
+        self.assertIn(str(self.msg_a.id), ids)
+        self.assertNotIn(str(self.msg_b.id), ids)
+        for item in result['related_messages']:
+            self.assertIn('text', item)
+            self.assertTrue(item['text'])

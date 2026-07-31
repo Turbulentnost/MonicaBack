@@ -29,7 +29,27 @@ INTENT_CACHE_TTL_SEC = 60
 INTENT_DAY_TAIL_LINES = 20
 INTENT_DRAFT_PREFIX_LEN = 40
 RECENT_FOCUS_TURNS = 3
+RELATED_PREVIEW_MAX_LEN = 120
 EMPTY_INTENT = {'topic': '', 'reply_goal': '', 'topic_shift': False}
+
+
+def serialize_related_messages(messages) -> list[dict]:
+    """Short previews of retrieval hits for the composer UI panel."""
+    payload = []
+    for msg in messages or []:
+        text = (getattr(msg, 'content', None) or '').strip()
+        text = re.sub(r'\s+', ' ', text)
+        if not text:
+            continue
+        if len(text) > RELATED_PREVIEW_MAX_LEN:
+            text = f'{text[:RELATED_PREVIEW_MAX_LEN].rstrip()}…'
+        sent_at = getattr(msg, 'sent_at', None)
+        payload.append({
+            'id': str(msg.id),
+            'text': text,
+            'sent_at': sent_at.isoformat() if sent_at else None,
+        })
+    return payload
 
 
 def get_or_create_style_profile(user) -> UserStyleProfile:
@@ -641,18 +661,18 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
     draft = draft if draft is not None else ''
 
     if not getattr(settings, 'AI_COMPLETION_ENABLED', False):
-        return {'suggestion': '', 'request_id': request_id, 'disabled': True}
+        return {'suggestion': '', 'request_id': request_id, 'disabled': True, 'related_messages': []}
 
     min_len = int(getattr(settings, 'AI_MIN_DRAFT_LEN', 1))
     if len(draft.strip()) < min_len:
-        return {'suggestion': '', 'request_id': request_id}
+        return {'suggestion': '', 'request_id': request_id, 'related_messages': []}
 
     profile = get_or_create_style_profile(user)
     if not profile.enabled:
-        return {'suggestion': '', 'request_id': request_id, 'disabled': True}
+        return {'suggestion': '', 'request_id': request_id, 'disabled': True, 'related_messages': []}
 
     if not _rate_limit_ok(user.id):
-        return {'suggestion': '', 'request_id': request_id, 'rate_limited': True}
+        return {'suggestion': '', 'request_id': request_id, 'rate_limited': True, 'related_messages': []}
 
     samples = select_style_samples(profile, draft)
     _, day_transcript = load_today_messages(chat_id, user)
@@ -701,6 +721,7 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
     related_transcript = ''
     segment_id = ''
     related_ids: list[str] = []
+    related_messages = []
     if chat_id:
         active_segment = get_active_segment(chat_id)
         segment_id = str(active_segment.id) if active_segment else ''
@@ -723,6 +744,7 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
         )
         related_ids = [str(m.id) for m in related_messages]
         related_transcript = messages_to_labeled_transcript(related_messages, user)
+    related_payload = serialize_related_messages(related_messages)
 
     # Cache includes topic/retrieval context so a shift does not reuse old suffixes.
     context_digest = hashlib.sha256(
@@ -731,10 +753,15 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
     cache_key = f'{_cache_key(user.id, draft, chat_id)}:{context_digest}'
     cached = cache.get(cache_key)
     if cached is not None:
+        if isinstance(cached, dict):
+            suggestion = cached.get('suggestion') or ''
+        else:
+            suggestion = cached
         return {
-            'suggestion': cached,
+            'suggestion': suggestion,
             'request_id': request_id,
             'cached': True,
+            'related_messages': related_payload,
         }
 
     length_target = infer_length_target(draft, topic_transcript, traits)
@@ -792,12 +819,26 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
     except Exception as exc:
         logger.exception('AI complete failed for user=%s', user.id)
         detail = 'llm_unavailable' if 'unavailable' in str(exc).lower() else 'llm_error'
-        return {'suggestion': '', 'request_id': request_id, 'error': True, 'detail': detail}
+        return {
+            'suggestion': '',
+            'request_id': request_id,
+            'error': True,
+            'detail': detail,
+            'related_messages': related_payload,
+        }
 
     # Never cache empty / failed answers — otherwise a downtime sticks for 30s.
     if suggestion:
-        cache.set(cache_key, suggestion, timeout=30)
-    return {'suggestion': suggestion, 'request_id': request_id}
+        cache.set(
+            cache_key,
+            {'suggestion': suggestion, 'related_messages': related_payload},
+            timeout=30,
+        )
+    return {
+        'suggestion': suggestion,
+        'request_id': request_id,
+        'related_messages': related_payload,
+    }
 
 
 def maybe_refresh_traits(profile: UserStyleProfile) -> None:
