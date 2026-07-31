@@ -116,6 +116,13 @@ class StyleServicesTests(TestCase):
             parse_reply_intent('Вот ответ:\n```json\n{"topic":"а","reply_goal":"б"}\n```'),
             {'topic': 'а', 'reply_goal': 'б'},
         )
+        # Prefill continuation suffix reconstructed into a full JSON object.
+        self.assertEqual(
+            parse_reply_intent(
+                '{"topic":"дружеский разговор","reply_goal":"продолжить с юмором"}'
+            ),
+            {'topic': 'дружеский разговор', 'reply_goal': 'продолжить с юмором'},
+        )
         self.assertEqual(parse_reply_intent(''), {'topic': '', 'reply_goal': ''})
         self.assertEqual(parse_reply_intent('not json at all'), {'topic': '', 'reply_goal': ''})
         self.assertEqual(parse_reply_intent('{bad'), {'topic': '', 'reply_goal': ''})

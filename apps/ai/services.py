@@ -387,6 +387,9 @@ def infer_reply_intent(
 
     day_block = _tail_day_transcript(day_transcript)
     draft_text = draft if draft is not None else ''
+    # Assistant prefill forces content-channel JSON; without it qwen-thinking
+    # often returns empty content / CoT-only for this short structured call.
+    intent_prefill = '{"topic":"'
     messages = [
         {
             'role': 'system',
@@ -395,9 +398,9 @@ def infer_reply_intent(
                 '1) тему текущего диалога; '
                 '2) цель следующего ответа — что пользователь хочет сказать или '
                 'объяснить дальше, продолжая именно этот черновик. '
-                'Ответь одним JSON-объектом без markdown со строковыми ключами '
-                'topic и reply_goal. Каждое значение — одна короткая фраза на русском. '
-                'Если данных мало, верни пустые строки.'
+                'Продолжи JSON-объект со строковыми ключами topic и reply_goal. '
+                'Каждое значение — одна короткая фраза на русском. '
+                'Если данных мало, оставь значения пустыми.'
             ),
         },
         {
@@ -406,19 +409,23 @@ def infer_reply_intent(
                 f'стиль_пользователя: {traits_line or "недостаточно данных"}\n'
                 f'=== История за сегодня ===\n{day_block}\n\n'
                 f'=== Черновик пользователя ===\n{draft_text or "(пусто)"}\n\n'
-                'Верни JSON: {"topic":"...","reply_goal":"..."}'
+                'Продолжи JSON: {"topic":"...","reply_goal":"..."}'
             ),
         },
+        {'role': 'assistant', 'content': intent_prefill},
     ]
     try:
         raw = chat_completion(
             messages,
-            max_tokens=80,
+            max_tokens=100,
             temperature=0.2,
             timeout=20,
             disable_thinking=True,
         )
-        intent = parse_reply_intent(raw)
+        reconstructed = (raw or '').strip()
+        if reconstructed and not reconstructed.startswith('{'):
+            reconstructed = f'{intent_prefill}{reconstructed.lstrip()}'
+        intent = parse_reply_intent(reconstructed)
     except Exception:
         logger.exception('AI intent inference failed user=%s chat=%s', user_id, chat_id)
         intent = dict(EMPTY_INTENT)
