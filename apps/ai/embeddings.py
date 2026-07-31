@@ -63,6 +63,20 @@ def upsert_message_embedding(message: Message, vector: list[float]) -> MessageEm
     return obj
 
 
+def user_can_access_chat(chat_id, user) -> bool:
+    """Retrieval/index reads are scoped to chats the user participates in."""
+    if not chat_id or not user:
+        return False
+    from apps.chats.models import Chat
+    from apps.chats.services import user_in_chat
+
+    try:
+        chat = Chat.objects.get(id=chat_id)
+    except (Chat.DoesNotExist, ValueError, TypeError):
+        return False
+    return bool(user_in_chat(chat, user))
+
+
 def get_active_segment(chat_id) -> ChatTopicSegment | None:
     return (
         ChatTopicSegment.objects
@@ -185,6 +199,8 @@ def embed_and_segment_message(message_id) -> dict:
 
 
 def load_segment_messages(chat_id, user, *, limit: int | None = None) -> list[Message]:
+    if not user_can_access_chat(chat_id, user):
+        return []
     active = get_active_segment(chat_id)
     qs = (
         Message.objects
@@ -228,7 +244,13 @@ def retrieve_related_messages(
     exclude_ids: set | None = None,
     top_k: int | None = None,
 ) -> list[Message]:
+    """
+    Semantic nearest neighbors for AI complete — strictly within this chat only.
+    Other dialogs of the same user are never searched.
+    """
     if not getattr(settings, 'AI_EMBEDDING_ENABLED', True):
+        return []
+    if not user_can_access_chat(chat_id, user):
         return []
     query_text = (query_text or '').strip()
     if not query_text:
@@ -236,6 +258,7 @@ def retrieve_related_messages(
 
     k = int(top_k if top_k is not None else getattr(settings, 'AI_RETRIEVAL_TOP_K', 8))
     exclude_ids = exclude_ids or set()
+    chat_id_str = str(chat_id)
 
     try:
         vectors = embed_texts([query_text])
@@ -246,9 +269,10 @@ def retrieve_related_messages(
     if not query_vec:
         return []
 
+    # Hard scope: embedding row AND underlying message must belong to this chat.
     qs = (
         MessageEmbedding.objects
-        .filter(chat_id=chat_id)
+        .filter(chat_id=chat_id, message__chat_id=chat_id)
         .select_related('message', 'message__sender')
         .annotate(distance=CosineDistance('embedding', query_vec))
         .order_by('distance')
@@ -260,6 +284,8 @@ def retrieve_related_messages(
     for row in qs[: max(k * 2, k)]:
         message = row.message
         if not message or message.deleted_at:
+            continue
+        if str(message.chat_id) != chat_id_str:
             continue
         if message.message_type != MessageType.TEXT:
             continue

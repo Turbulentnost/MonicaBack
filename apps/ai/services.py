@@ -714,6 +714,7 @@ def complete_draft(user, draft: str, chat_id: str | None = None) -> dict:
         )
         exclude_ids = {m.id for m in segment_messages}
         query_text = f'{recent_focus_turns(topic_transcript)}\n{draft}'.strip()
+        # Semantic retrieval is scoped to this chat only (never other dialogs).
         related_messages = retrieve_related_messages(
             chat_id,
             user,

@@ -264,3 +264,115 @@ class CompleteApiTests(TestCase):
         response = self.client.patch('/api/ai/style/', {'enabled': False}, format='json')
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.data['enabled'])
+
+
+class ChatScopedRetrievalTests(TestCase):
+    """Semantic retrieval must stay inside the open dialog only."""
+
+    def setUp(self):
+        from apps.ai.models import MessageEmbedding
+        from apps.chats.models import Chat, ChatParticipant, Message, MessageType
+
+        User = get_user_model()
+        self.user = User.objects.create_user(
+            email='scope@example.com',
+            nickname='scopeuser',
+            password='testpass123',
+            first_name='S',
+            last_name='Cope',
+        )
+        self.partner_a = User.objects.create_user(
+            email='partnera@example.com',
+            nickname='partnera',
+            password='testpass123',
+            first_name='P',
+            last_name='A',
+        )
+        self.partner_b = User.objects.create_user(
+            email='partnerb@example.com',
+            nickname='partnerb',
+            password='testpass123',
+            first_name='P',
+            last_name='B',
+        )
+        self.chat_a = Chat.objects.create()
+        self.chat_b = Chat.objects.create()
+        ChatParticipant.objects.create(chat=self.chat_a, user=self.user)
+        ChatParticipant.objects.create(chat=self.chat_a, user=self.partner_a)
+        ChatParticipant.objects.create(chat=self.chat_b, user=self.user)
+        ChatParticipant.objects.create(chat=self.chat_b, user=self.partner_b)
+
+        self.msg_a = Message.objects.create(
+            chat=self.chat_a,
+            sender=self.partner_a,
+            content='деплой моники на прод сервер',
+            message_type=MessageType.TEXT,
+        )
+        self.msg_b = Message.objects.create(
+            chat=self.chat_b,
+            sender=self.partner_b,
+            content='деплой моники на прод сервер',
+            message_type=MessageType.TEXT,
+        )
+        # Same vector so distance would otherwise prefer either; scope must win.
+        vector = [1.0] + [0.0] * 1023
+        MessageEmbedding.objects.create(
+            message=self.msg_a,
+            chat=self.chat_a,
+            user=self.partner_a,
+            embedding=vector,
+            content_hash='a',
+        )
+        MessageEmbedding.objects.create(
+            message=self.msg_b,
+            chat=self.chat_b,
+            user=self.partner_b,
+            embedding=vector,
+            content_hash='b',
+        )
+
+    def test_retrieve_stays_in_current_chat(self):
+        from unittest.mock import patch
+        from apps.ai.embeddings import retrieve_related_messages
+
+        with patch('apps.ai.embeddings.embed_texts', return_value=[[1.0] + [0.0] * 1023]):
+            related = retrieve_related_messages(
+                self.chat_a.id,
+                self.user,
+                query_text='деплой',
+            )
+        ids = {str(m.id) for m in related}
+        self.assertIn(str(self.msg_a.id), ids)
+        self.assertNotIn(str(self.msg_b.id), ids)
+
+    def test_retrieve_rejects_non_member(self):
+        from unittest.mock import patch
+        from apps.ai.embeddings import retrieve_related_messages
+
+        stranger = get_user_model().objects.create_user(
+            email='stranger@example.com',
+            nickname='stranger',
+            password='testpass123',
+            first_name='N',
+            last_name='O',
+        )
+        with patch('apps.ai.embeddings.embed_texts', return_value=[[1.0] + [0.0] * 1023]):
+            related = retrieve_related_messages(
+                self.chat_a.id,
+                stranger,
+                query_text='деплой',
+            )
+        self.assertEqual(related, [])
+
+    def test_load_segment_rejects_non_member(self):
+        from apps.ai.embeddings import load_segment_messages
+
+        stranger = get_user_model().objects.create_user(
+            email='stranger2@example.com',
+            nickname='stranger2',
+            password='testpass123',
+            first_name='N',
+            last_name='O',
+        )
+        self.assertEqual(load_segment_messages(self.chat_a.id, stranger), [])
+        self.assertTrue(load_segment_messages(self.chat_a.id, self.user))

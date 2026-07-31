@@ -8,10 +8,18 @@ from apps.chats.models import Message, MessageType
 
 
 class Command(BaseCommand):
-    help = 'Backfill message embeddings and topic segments'
+    help = (
+        'Backfill message embeddings and topic segments. '
+        'Each chat keeps its own logical index (chat_id); use --chat_id to fill one dialog.'
+    )
 
     def add_arguments(self, parser):
-        parser.add_argument('--chat_id', type=str, default='', help='Limit to one chat UUID')
+        parser.add_argument(
+            '--chat_id',
+            type=str,
+            default='',
+            help='Fill embeddings only for this dialog (recommended for a single interlocutor)',
+        )
         parser.add_argument('--days', type=int, default=30, help='How many days back (0 = all)')
         parser.add_argument('--limit', type=int, default=0, help='Max messages to process (0 = all)')
         parser.add_argument(
@@ -54,6 +62,7 @@ class Command(BaseCommand):
                 ok += 1
 
         mode = 'sync' if sync else 'queued'
+        scope = f'chat={chat_id}' if chat_id else 'chat=all'
         self.stdout.write(self.style.SUCCESS(
-            f'embed_chat_history {mode}: processed={total} ok={ok}'
+            f'embed_chat_history {mode} {scope}: processed={total} ok={ok}'
         ))
