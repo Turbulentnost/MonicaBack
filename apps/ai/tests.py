@@ -15,6 +15,7 @@ from apps.ai.services import (
     day_transcript_to_messages,
     infer_length_target,
     parse_reply_intent,
+    recent_focus_turns,
     sanitize_suggestion,
     select_style_samples,
     strip_draft_prefix,
@@ -94,18 +95,37 @@ class StyleServicesTests(TestCase):
         self.assertIn('Смысл текущего ответа', msgs[1]['content'])
         self.assertIn('тема: встреча завтра', msgs[1]['content'])
         self.assertIn('цель_ответа: подтвердить время', msgs[1]['content'])
+        self.assertIn('последние_реплики:', msgs[1]['content'])
+        self.assertIn('можешь завтра в 5?', msgs[1]['content'])
         self.assertIn('length_target=', msgs[1]['content'])
-        self.assertIn('цель ответа', msgs[0]['content'].lower())
+        self.assertIn('цель_ответа', msgs[0]['content'])
+        self.assertIn('последние 2–3 реплики', msgs[0]['content'])
         self.assertEqual(
-            msgs[2:-1],
+            msgs[2:-2],
             [
                 {'role': 'user', 'content': 'привет, как дела?'},
                 {'role': 'assistant', 'content': 'норм'},
                 {'role': 'user', 'content': 'можешь завтра в 5?'},
             ],
         )
+        self.assertEqual(msgs[-2]['role'], 'user')
+        self.assertIn('подтвердить время', msgs[-2]['content'])
+        self.assertIn('можешь завтра в 5?', msgs[-2]['content'])
         self.assertEqual(msgs[-1]['role'], 'assistant')
         self.assertEqual(msgs[-1]['content'], draft)
+
+    def test_recent_focus_turns_takes_last_n(self):
+        day = (
+            'Собеседник: один\n'
+            'Я: два\n'
+            'Собеседник: три\n'
+            'Я: четыре\n'
+            'Собеседник: пять\n'
+        )
+        self.assertEqual(
+            recent_focus_turns(day, n=3),
+            'Собеседник: три\nЯ: четыре\nСобеседник: пять',
+        )
 
     def test_parse_reply_intent_valid_and_garbage(self):
         self.assertEqual(

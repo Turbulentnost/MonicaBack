@@ -28,6 +28,7 @@ COMPLETION_DAY_LINES = 36
 INTENT_CACHE_TTL_SEC = 60
 INTENT_DAY_TAIL_LINES = 20
 INTENT_DRAFT_PREFIX_LEN = 40
+RECENT_FOCUS_TURNS = 3
 EMPTY_INTENT = {'topic': '', 'reply_goal': ''}
 
 
@@ -339,6 +340,18 @@ def day_transcript_to_messages(day_transcript: str) -> list[dict[str, str]]:
     return result
 
 
+def recent_focus_turns(
+    day_transcript: str,
+    *,
+    n: int = RECENT_FOCUS_TURNS,
+) -> str:
+    """Last N labeled lines — the immediate conversational focus."""
+    lines = [ln.strip() for ln in (day_transcript or '').splitlines() if ln.strip() and ':' in ln]
+    if not lines:
+        return '(нет)'
+    return '\n'.join(lines[-max(1, n):])
+
+
 def parse_reply_intent(raw: str) -> dict[str, str]:
     """Parse `{topic, reply_goal}` JSON from an LLM response; never raise."""
     if not raw or not isinstance(raw, str):
@@ -386,6 +399,7 @@ def infer_reply_intent(
         }
 
     day_block = _tail_day_transcript(day_transcript)
+    recent_block = recent_focus_turns(day_transcript)
     draft_text = draft if draft is not None else ''
     # Assistant prefill forces content-channel JSON; without it qwen-thinking
     # often returns empty content / CoT-only for this short structured call.
@@ -398,6 +412,8 @@ def infer_reply_intent(
                 '1) тему текущего диалога; '
                 '2) цель следующего ответа — что пользователь хочет сказать или '
                 'объяснить дальше, продолжая именно этот черновик. '
+                'Цель строй в первую очередь по последним 2–3 репликам и черновику, '
+                'а не по всей истории целиком. '
                 'Продолжи JSON-объект со строковыми ключами topic и reply_goal. '
                 'Каждое значение — одна короткая фраза на русском. '
                 'Если данных мало, оставь значения пустыми.'
@@ -407,6 +423,7 @@ def infer_reply_intent(
             'role': 'user',
             'content': (
                 f'стиль_пользователя: {traits_line or "недостаточно данных"}\n'
+                f'=== Последние реплики (главный фокус) ===\n{recent_block}\n\n'
                 f'=== История за сегодня ===\n{day_block}\n\n'
                 f'=== Черновик пользователя ===\n{draft_text or "(пусто)"}\n\n'
                 'Продолжи JSON: {"topic":"...","reply_goal":"..."}'
@@ -518,46 +535,55 @@ def build_completion_messages(
         if isinstance(s, str) and s.strip()
     ) or '(нет)'
     history_messages = day_transcript_to_messages(day_transcript)
+    recent_block = recent_focus_turns(day_transcript)
     length_target = infer_length_target(draft, day_transcript, traits)
     length_rule = {
         'short': 'короткий суффикс (несколько слов / короткая фраза), затем стоп',
         'medium': 'средний суффикс (закончить мысль, 1 короткое предложение), затем стоп',
         'long': 'можно 1–3 коротких предложения, если черновик этого требует, затем стоп',
     }[length_target]
+    goal_line = reply_goal or 'закончить мысль по последним репликам'
+    topic_line = topic or 'текущий диалог'
 
     # Keep system compact (thinking models stall on huge system prompts).
     system = (
         'Ты автодополнение в мессенджере. Пишешь ОТ ЛИЦА пользователя. '
-        'Тебе даны: стиль общения с этим собеседником, тема диалога, '
-        'цель текущего ответа, переписка за сегодня и полное текущее сообщение '
-        'из поля ввода. '
-        'Сначала опирайся на тему и цель ответа, затем продолжи ИМЕННО текущее '
-        'сообщение — верни только новый суффикс '
+        'Главный ориентир — цель_ответа и последние 2–3 реплики; '
+        'общая тема вторична. '
+        'Продолжи ИМЕННО текущий черновик — верни только новый суффикс '
         '(без повтора уже написанного, без кавычек, без пояснений, без markdown). '
-        'Цель ответа — что дописать в этот черновик, а не отдельное новое сообщение. '
+        'Суффикс должен продвигать цель_ответа и звучать как естественная '
+        'реакция на последние реплики собеседника. '
+        'Не уходи в общие фразы, не меняй тему, не начинай новое сообщение. '
         f'Длина: {length_rule}. '
-        'История ниже передана реальными ролями: user — собеседник, '
-        'assistant — автор текущего черновика. '
-        'Учитывай смысл всей сегодняшней переписки и особенно последние сообщения. '
-        'Не меняй тему; не раздувай текст; остановись, когда сообщение звучит законченным.'
+        'История ниже: user — собеседник, assistant — автор черновика. '
+        'Остановись, когда сообщение звучит законченным.'
     )
     style_context = (
+        '=== Смысл текущего ответа (приоритет) ===\n'
+        f'тема: {topic_line}\n'
+        f'цель_ответа: {goal_line}\n'
+        f'последние_реплики:\n{recent_block}\n'
+        f'length_target={length_target}\n'
+        '\n'
         '=== Как я общаюсь с этим пользователем ===\n'
         f'общий_стиль: {traits_line}\n'
         f'стиль_с_этим_собеседником: {partner_line or "пока нет"}\n'
         f'примеры_моих_фраз: {sample_bits}\n'
         '\n'
-        '=== Смысл текущего ответа ===\n'
-        f'тема: {topic or "не определена"}\n'
-        f'цель_ответа: {reply_goal or "не определена"}\n'
-        f'length_target={length_target}\n'
-        'После истории идёт новый полный черновик автора. Продолжи именно его, '
-        'держась темы и цели ответа.'
+        'Суффикс обязан служить цели_ответа и опираться на последние_реплики.'
+    )
+    focus_nudge = (
+        f'Перед продолжением: цель_ответа = «{goal_line}». '
+        f'Последние реплики:\n{recent_block}\n'
+        'Продолжи следующий черновик только суффиксом, который двигает эту цель '
+        'и отвечает смыслу последних реплик — без общих заглушек.'
     )
     return [
         {'role': 'system', 'content': system},
         {'role': 'user', 'content': style_context},
         *history_messages,
+        {'role': 'user', 'content': focus_nudge},
         {'role': 'assistant', 'content': draft},
     ]
 
