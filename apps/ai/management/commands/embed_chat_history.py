@@ -29,12 +29,12 @@ class Command(BaseCommand):
         qs = (
             Message.objects
             .filter(message_type=MessageType.TEXT, deleted_at__isnull=True)
-            .order_by('created_at')
+            .order_by('sent_at')
         )
         if chat_id:
             qs = qs.filter(chat_id=chat_id)
         if days > 0:
-            qs = qs.filter(created_at__gte=timezone.now() - timedelta(days=days))
+            qs = qs.filter(sent_at__gte=timezone.now() - timedelta(days=days))
         if limit > 0:
             qs = qs[:limit]
 

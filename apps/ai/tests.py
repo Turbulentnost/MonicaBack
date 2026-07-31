@@ -192,8 +192,8 @@ class StyleServicesTests(TestCase):
         self.assertGreater(cosine_similarity([1, 0], [1, 0]), 0.99)
         self.assertLess(cosine_similarity([1, 0], [0, 1]), 0.1)
 
-        prev_msg = SimpleNamespace(created_at=None)
-        cur_msg = SimpleNamespace(created_at=None)
+        prev_msg = SimpleNamespace(sent_at=None)
+        cur_msg = SimpleNamespace(sent_at=None)
         prev_emb = SimpleNamespace(embedding=[1.0, 0.0])
         self.assertFalse(
             should_start_new_topic(

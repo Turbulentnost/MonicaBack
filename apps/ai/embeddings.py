@@ -80,7 +80,7 @@ def close_segment(segment: ChatTopicSegment, *, at=None) -> None:
 def open_segment(message: Message, vector: list[float], label: str = '') -> ChatTopicSegment:
     return ChatTopicSegment.objects.create(
         chat_id=message.chat_id,
-        started_at=message.created_at or timezone.now(),
+        started_at=getattr(message, 'sent_at', None) or timezone.now(),
         ended_at=None,
         anchor_message=message,
         label=(label or '')[:160],
@@ -100,8 +100,8 @@ def should_start_new_topic(
         return True
 
     gap_minutes = int(getattr(settings, 'AI_TOPIC_GAP_MINUTES', 25))
-    prev_at = previous_message.created_at
-    cur_at = current_message.created_at
+    prev_at = getattr(previous_message, 'sent_at', None)
+    cur_at = getattr(current_message, 'sent_at', None)
     if prev_at and cur_at and (cur_at - prev_at) >= timedelta(minutes=gap_minutes):
         return True
 
@@ -117,7 +117,7 @@ def assign_topic_segment(message: Message, vector: list[float]) -> ChatTopicSegm
         .filter(chat_id=message.chat_id)
         .exclude(message_id=message.id)
         .select_related('message')
-        .order_by('-message__created_at')
+        .order_by('-message__sent_at')
         .first()
     )
     previous_message = previous_emb.message if previous_emb else None
@@ -130,7 +130,7 @@ def assign_topic_segment(message: Message, vector: list[float]) -> ChatTopicSegm
         current_vector=vector,
     ):
         if active:
-            close_segment(active, at=message.created_at)
+            close_segment(active, at=getattr(message, 'sent_at', None))
         return open_segment(message, vector)
 
     if not active:
@@ -190,18 +190,18 @@ def load_segment_messages(chat_id, user, *, limit: int | None = None) -> list[Me
         Message.objects
         .filter(chat_id=chat_id, message_type=MessageType.TEXT, deleted_at__isnull=True)
         .select_related('sender')
-        .order_by('created_at')
+        .order_by('sent_at')
     )
     if active:
-        qs = qs.filter(created_at__gte=active.started_at)
+        qs = qs.filter(sent_at__gte=active.started_at)
         if active.ended_at:
-            qs = qs.filter(created_at__lte=active.ended_at)
+            qs = qs.filter(sent_at__lte=active.ended_at)
     else:
         fallback = int(getattr(settings, 'AI_TOPIC_FALLBACK_MESSAGES', 12))
         ids = list(
-            qs.order_by('-created_at').values_list('id', flat=True)[:fallback]
+            qs.order_by('-sent_at').values_list('id', flat=True)[:fallback]
         )
-        qs = Message.objects.filter(id__in=ids).select_related('sender').order_by('created_at')
+        qs = Message.objects.filter(id__in=ids).select_related('sender').order_by('sent_at')
 
     messages = list(qs)
     if limit is not None:
@@ -269,5 +269,5 @@ def retrieve_related_messages(
         if len(related) >= k:
             break
 
-    related.sort(key=lambda m: m.created_at or timezone.now())
+    related.sort(key=lambda m: getattr(m, 'sent_at', None) or timezone.now())
     return related
