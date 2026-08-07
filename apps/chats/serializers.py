@@ -141,6 +141,9 @@ class ChatListSerializer(serializers.Serializer):
     last_message = MessageSerializer(allow_null=True)
     updated_at = serializers.DateTimeField()
     background_url = serializers.CharField(allow_null=True, required=False)
+    background_mobile = serializers.CharField(allow_null=True, required=False)
+    background_mobile_url = serializers.CharField(allow_null=True, required=False)
+    background_mobile_updated_at = serializers.DateTimeField(allow_null=True, required=False)
 
 
 class CreateGroupChatSerializer(serializers.Serializer):

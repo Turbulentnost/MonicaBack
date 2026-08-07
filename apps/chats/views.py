@@ -26,7 +26,6 @@ from apps.chats.services import (
     get_chat_history_cache_version,
     get_or_create_direct_chat,
     get_or_create_favorites_chat,
-    get_participant_background_url,
     get_pinned_messages,
     get_user_chats,
     get_visible_messages,
@@ -411,6 +410,14 @@ class ChatMessagePinView(APIView):
 class ChatBackgroundView(APIView):
     permission_classes = [IsAuthenticated]
 
+    def _platform(self, request):
+        from apps.chats.services import normalize_background_platform
+        return normalize_background_platform(
+            request.query_params.get('platform')
+            or request.data.get('platform')
+            or request.headers.get('X-Monica-Client')
+        )
+
     def post(self, request, chat_id):
         try:
             chat = get_user_chats(request.user).get(id=chat_id)
@@ -421,7 +428,12 @@ class ChatBackgroundView(APIView):
         if not photo:
             return Response({'photo': 'Файл обязателен'}, status=400)
         try:
-            payload = set_chat_background(chat, request.user, photo)
+            payload = set_chat_background(
+                chat,
+                request.user,
+                photo,
+                platform=self._platform(request),
+            )
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=400)
         return Response(payload)
@@ -431,7 +443,13 @@ class ChatBackgroundView(APIView):
             chat = get_user_chats(request.user).get(id=chat_id)
         except Chat.DoesNotExist:
             return Response({'detail': 'Чат не найден'}, status=404)
-        return Response(clear_chat_background(chat, request.user))
+        return Response(
+            clear_chat_background(
+                chat,
+                request.user,
+                platform=self._platform(request),
+            )
+        )
 
 
 class ChatMessageUploadView(APIView):

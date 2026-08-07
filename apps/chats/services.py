@@ -409,7 +409,10 @@ def serialize_chat_list_item(chat, user, request=None):
             MessageSerializer(last_message, context=ctx).data if last_message else None
         ),
         'updated_at': chat.updated_at,
-        'background_url': get_participant_background_url(chat, user),
+        # Web wallpaper (независим от mobile).
+        'background_url': get_participant_background_url(chat, user, platform='web'),
+        # Mobile wallpaper: path + presigned URL + updated_at для инвалидации кэша.
+        **get_participant_mobile_background_fields(chat, user),
         'is_blocked': is_blocked,
         'is_blocked_by_partner': is_blocked_by_partner,
     }
@@ -560,23 +563,54 @@ def upload_chat_files(chat, user, uploaded_files):
     return [upload_chat_file(chat, user, f) for f in uploaded_files]
 
 
-def get_participant_background_url(chat, user):
+def _get_chat_participant(chat, user):
     # Не ходим через related manager после Prefetch(select_related='user'):
-    # .only('background') конфликтует с уже заданным select_related.
+    # .only(...) конфликтует с уже заданным select_related.
     prefetched = getattr(chat, '_prefetched_objects_cache', {}).get('participants')
     if prefetched is not None:
-        participant = next((p for p in prefetched if p.user_id == user.id), None)
-    else:
-        participant = ChatParticipant.objects.filter(chat_id=chat.id, user_id=user.id).first()
-    if not participant or not participant.background:
+        return next((p for p in prefetched if p.user_id == user.id), None)
+    return ChatParticipant.objects.filter(chat_id=chat.id, user_id=user.id).first()
+
+
+def normalize_background_platform(platform) -> str:
+    value = (platform or 'web').strip().lower()
+    return value if value in ('web', 'mobile') else 'web'
+
+
+def get_participant_background_url(chat, user, platform='web'):
+    participant = _get_chat_participant(chat, user)
+    if not participant:
         return None
-    return get_presigned_url(participant.background)
+    path = (
+        participant.background_mobile
+        if platform == 'mobile'
+        else participant.background
+    )
+    if not path:
+        return None
+    return get_presigned_url(path)
 
 
-def set_chat_background(chat, user, uploaded_file):
+def get_participant_mobile_background_fields(chat, user):
+    participant = _get_chat_participant(chat, user)
+    if not participant or not participant.background_mobile:
+        return {
+            'background_mobile': None,
+            'background_mobile_url': None,
+            'background_mobile_updated_at': None,
+        }
+    return {
+        'background_mobile': participant.background_mobile,
+        'background_mobile_url': get_presigned_url(participant.background_mobile),
+        'background_mobile_updated_at': participant.background_mobile_updated_at,
+    }
+
+
+def set_chat_background(chat, user, uploaded_file, platform='web'):
     if not uploaded_file:
         raise ValueError('Файл обязателен')
 
+    platform = normalize_background_platform(platform)
     content_type = (getattr(uploaded_file, 'content_type', None) or '').lower()
     name = getattr(uploaded_file, 'name', '') or 'background.jpg'
     ext = os.path.splitext(name)[1].lower()
@@ -601,7 +635,10 @@ def set_chat_background(chat, user, uploaded_file):
             '.webp': 'image/webp',
         }.get(object_ext, 'image/jpeg')
 
-    object_name = f'{chat.id}/bg/{user.id}/{uuid.uuid4().hex}{object_ext}'
+    if platform == 'mobile':
+        object_name = f'{chat.id}/bg/{user.id}/mobile/{uuid.uuid4().hex}{object_ext}'
+    else:
+        object_name = f'{chat.id}/bg/{user.id}/{uuid.uuid4().hex}{object_ext}'
     path = upload_file(
         settings.MINIO_BUCKET_CHAT_FILES,
         object_name,
@@ -610,6 +647,22 @@ def set_chat_background(chat, user, uploaded_file):
     )
 
     participant, _ = ChatParticipant.objects.get_or_create(chat=chat, user=user)
+    if platform == 'mobile':
+        old_path = participant.background_mobile
+        participant.background_mobile = path
+        participant.background_mobile_updated_at = timezone.now()
+        participant.save(update_fields=['background_mobile', 'background_mobile_updated_at'])
+        if old_path and old_path != path:
+            delete_object(old_path)
+        return {
+            'background': path,
+            'background_url': get_presigned_url(path),
+            'background_mobile': path,
+            'background_mobile_url': get_presigned_url(path),
+            'background_mobile_updated_at': participant.background_mobile_updated_at,
+            'platform': 'mobile',
+        }
+
     old_path = participant.background
     participant.background = path
     participant.save(update_fields=['background'])
@@ -619,19 +672,47 @@ def set_chat_background(chat, user, uploaded_file):
     return {
         'background': path,
         'background_url': get_presigned_url(path),
+        'platform': 'web',
     }
 
 
-def clear_chat_background(chat, user):
+def clear_chat_background(chat, user, platform='web'):
+    platform = normalize_background_platform(platform)
     participant = chat.participants.filter(user=user).first()
     if not participant:
-        return {'background': '', 'background_url': None}
+        if platform == 'mobile':
+            return {
+                'background': '',
+                'background_url': None,
+                'background_mobile': None,
+                'background_mobile_url': None,
+                'background_mobile_updated_at': None,
+                'platform': 'mobile',
+            }
+        return {'background': '', 'background_url': None, 'platform': 'web'}
+
+    if platform == 'mobile':
+        old_path = participant.background_mobile
+        if old_path:
+            participant.background_mobile = ''
+            participant.background_mobile_updated_at = None
+            participant.save(update_fields=['background_mobile', 'background_mobile_updated_at'])
+            delete_object(old_path)
+        return {
+            'background': '',
+            'background_url': None,
+            'background_mobile': None,
+            'background_mobile_url': None,
+            'background_mobile_updated_at': None,
+            'platform': 'mobile',
+        }
+
     old_path = participant.background
     if old_path:
         participant.background = ''
         participant.save(update_fields=['background'])
         delete_object(old_path)
-    return {'background': '', 'background_url': None}
+    return {'background': '', 'background_url': None, 'platform': 'web'}
 
 
 def can_delete_for_everyone(message, user):

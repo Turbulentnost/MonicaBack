@@ -73,8 +73,11 @@ class ChatParticipant(models.Model):
         default=ChatParticipantRole.MEMBER,
     )
     joined_at = models.DateTimeField(auto_now_add=True)
-    # MinIO object path (bucket/object) for this user's personal chat wallpaper.
+    # MinIO object path (bucket/object) for this user's personal chat wallpaper (web).
     background = models.CharField(max_length=512, blank=True, default='')
+    # Отдельный фон для мобильного клиента — не пересекается с web.
+    background_mobile = models.CharField(max_length=512, blank=True, default='')
+    background_mobile_updated_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         unique_together = ('chat', 'user')
